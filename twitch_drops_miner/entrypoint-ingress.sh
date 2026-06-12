@@ -12,6 +12,13 @@ mkdir -p /data/cache
 # Папка /config монтируется Home Assistant автоматически через 'addon_config:rw'
 # и указывает на /addon_configs/twitch_drops_miner на хосте.
 
+# МИГРАЦИЯ: Если есть конфиг в старой папке /data/config, переносим его в новую папку /config
+if [ -d /data/config ] && [ "$(ls -A /data/config 2>/dev/null)" ]; then
+    echo "Migration: Found old configuration in /data/config. Moving to /config..."
+    cp -rp /data/config/* /config/ 2>/dev/null
+    rm -rf /data/config
+fi
+
 # Если папки в контейнере еще не являются ссылками, переносим файлы и заменяем их ссылками
 if [ -d /TwitchDropsMiner/config ] && [ ! -L /TwitchDropsMiner/config ]; then
     cp -rp /TwitchDropsMiner/config/* /config/ 2>/dev/null
