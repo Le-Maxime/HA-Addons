@@ -2,6 +2,7 @@ name: "Twitch Drops Miner"
 description: "AFK mine timed Twitch drops with automatic drop claiming and channel switching"
 version: "v16.dev.8c55d85"
 slug: "twitch_drops_miner"
+url: "https://github.com/DarkAssassinUA/HA-Addons"
 init: false
 arch:
   - aarch64
