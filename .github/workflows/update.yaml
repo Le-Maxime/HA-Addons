@@ -23,7 +23,7 @@ jobs:
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git status
           if [ -n "$(git status --porcelain)" ]; then
-            git add twitch_drops_miner/config.yaml twitch_drops_miner/docker_digest.txt
+            git add -u
             git commit -m "Bump addon version due to Docker image update"
             git push
           else

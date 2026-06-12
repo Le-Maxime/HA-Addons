@@ -7,6 +7,7 @@ import os
 script_dir = os.path.dirname(os.path.abspath(__file__))
 config_path = os.path.join(script_dir, 'twitch_drops_miner', 'config.yaml')
 digest_path = os.path.join(script_dir, 'twitch_drops_miner', 'docker_digest.txt')
+readme_path = os.path.join(script_dir, 'README.md')
 
 # 1. Получение списка тегов с Docker Hub
 url = 'https://hub.docker.com/v2/repositories/dungfu/twitch-drops-miner/tags?page_size=100'
@@ -112,3 +113,22 @@ if os.path.exists(config_path):
 else:
     print(f"Error: config.yaml not found at {config_path}")
     exit(1)
+
+# 5. Обновляем версию в README.md
+if os.path.exists(readme_path):
+    with open(readme_path, 'r', encoding='utf-8') as f:
+        readme_content = f.read()
+    
+    if re.search(r'\*\*Current Version:\*\*\s*`[^`]+`', readme_content):
+        new_readme_content = re.sub(
+            r'(\*\*Current Version:\*\*\s*`)[^`]+(`)',
+            r'\g<1>' + target_version + r'\g<2>',
+            readme_content
+        )
+        with open(readme_path, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(new_readme_content)
+        print(f"Successfully bumped version in README.md from {current_version} to {target_version}")
+    else:
+        print("Warning: '**Current Version:** `...`' pattern not found in README.md")
+else:
+    print(f"Warning: README.md not found at {readme_path}")
