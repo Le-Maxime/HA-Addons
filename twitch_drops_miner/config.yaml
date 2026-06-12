@@ -15,6 +15,6 @@ panel_icon: "mdi:pickaxe"
 ports:
   5800/tcp: 5800
 map:
-  - config:rw
+  - addon_config:rw
 options: {}
 schema: {}

@@ -5,13 +5,16 @@ USER_ID=${USER_ID:-1000}
 GROUP_ID=${GROUP_ID:-1000}
 
 echo "Configuring persistent directories..."
-# Создаем папки в постоянном хранилище HA /data
-mkdir -p /data/config
+
+# Создаем папку кэша в постоянном внутреннем хранилище /data (пользователю кэш не нужен)
 mkdir -p /data/cache
+
+# Папка /config монтируется Home Assistant автоматически через 'addon_config:rw'
+# и указывает на /addon_configs/twitch_drops_miner на хосте.
 
 # Если папки в контейнере еще не являются ссылками, переносим файлы и заменяем их ссылками
 if [ -d /TwitchDropsMiner/config ] && [ ! -L /TwitchDropsMiner/config ]; then
-    cp -rp /TwitchDropsMiner/config/* /data/config/ 2>/dev/null
+    cp -rp /TwitchDropsMiner/config/* /config/ 2>/dev/null
     rm -rf /TwitchDropsMiner/config
 fi
 
@@ -22,15 +25,15 @@ fi
 
 # Создаем символические ссылки
 if [ ! -L /TwitchDropsMiner/config ]; then
-    ln -s /data/config /TwitchDropsMiner/config
+    ln -s /config /TwitchDropsMiner/config
 fi
 
 if [ ! -L /TwitchDropsMiner/cache ]; then
     ln -s /data/cache /TwitchDropsMiner/cache
 fi
 
-# Выдаем права на запись пользователю приложения (su-exec запускает от него)
-chown -R $USER_ID:$GROUP_ID /data/config /data/cache
+# Выдаем права на запись пользователю приложения для обеих папок
+chown -R $USER_ID:$GROUP_ID /config /data/cache
 
 # Запуск Nginx в фоновом режиме
 echo "Starting Nginx reverse proxy..."
