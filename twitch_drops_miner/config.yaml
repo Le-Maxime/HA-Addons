@@ -11,6 +11,7 @@ arch:
 ingress: true
 ingress_port: 5800
 panel: true
+panel_icon: "mdi:pickaxe"
 ports:
   5800/tcp: 5800
 map:
