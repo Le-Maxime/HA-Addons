@@ -9,11 +9,11 @@ RUN apk add --no-cache nginx && \
 
 # Копируем конфигурацию Nginx и новый скрипт точки входа
 COPY nginx.conf /etc/nginx/nginx.conf
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY entrypoint-ingress.sh /entrypoint-ingress.sh
+RUN chmod +x /entrypoint-ingress.sh
 
 # Запускаем веб-интерфейс на порту 5801 (Nginx будет проксировать с 5800 на 5801)
 ENV WEBUI_PORT=5801
 
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["/entrypoint-ingress.sh"]
 CMD ["--0utput", "/config/twitch_drops_miner"]
