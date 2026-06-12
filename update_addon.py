@@ -119,16 +119,18 @@ if os.path.exists(readme_path):
     with open(readme_path, 'r', encoding='utf-8') as f:
         readme_content = f.read()
     
-    if re.search(r'\*\*Current Version:\*\*\s*`[^`]+`', readme_content):
+    # Регулярное выражение для поиска строки вида **Current Version:** [v16.dev.8c55d85](https://github.com/fireph/docker-twitch-drops-miner/releases/tag/16.dev.8c55d85)
+    pattern = r'(\*\*Current Version:\*\*\s*\[)[^\]]+(\]\(https://github.com/fireph/docker-twitch-drops-miner/releases/tag/)[^)]+(\))'
+    if re.search(pattern, readme_content):
         new_readme_content = re.sub(
-            r'(\*\*Current Version:\*\*\s*`)[^`]+(`)',
-            r'\g<1>' + target_version + r'\g<2>',
+            pattern,
+            r'\g<1>' + target_version + r'\g<2>' + version_tag + r'\g<3>',
             readme_content
         )
         with open(readme_path, 'w', encoding='utf-8', newline='\n') as f:
             f.write(new_readme_content)
-        print(f"Successfully bumped version in README.md from {current_version} to {target_version}")
+        print(f"Successfully bumped version link in README.md to {target_version}")
     else:
-        print("Warning: '**Current Version:** `...`' pattern not found in README.md")
+        print("Warning: '**Current Version:** [...](...)' pattern not found in README.md")
 else:
     print(f"Warning: README.md not found at {readme_path}")
