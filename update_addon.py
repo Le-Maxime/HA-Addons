@@ -8,6 +8,56 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 config_path = os.path.join(script_dir, 'twitch_drops_miner', 'config.yaml')
 digest_path = os.path.join(script_dir, 'twitch_drops_miner', 'docker_digest.txt')
 readme_path = os.path.join(script_dir, 'README.md')
+changelog_path = os.path.join(script_dir, 'twitch_drops_miner', 'CHANGELOG.md')
+
+def update_changelog(v_tag, t_version, c_path):
+    """Получает описание релиза с GitHub и записывает/добавляет его в CHANGELOG.md"""
+    release_body = ""
+    api_url = f"https://api.github.com/repos/fireph/docker-twitch-drops-miner/releases/tags/{v_tag}"
+    print(f"Fetching release notes from {api_url}...")
+    try:
+        req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            release_body = data.get('body', '').strip()
+    except Exception as e:
+        print(f"Could not fetch release notes from GitHub API: {e}")
+        release_body = f"Version bumped to {t_version}. See [upstream release](https://github.com/fireph/docker-twitch-drops-miner/releases/tag/{v_tag}) for details."
+
+    if not release_body:
+        release_body = f"Version bumped to {t_version}."
+
+    # Форматируем новую запись
+    new_entry = f"## {t_version}\n\n{release_body}\n\n"
+
+    # Записываем или вставляем в CHANGELOG.md
+    if os.path.exists(c_path):
+        with open(c_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Находим заголовок '# Changelog' и вставляем запись сразу после него
+        match = re.search(r'(#\s*Changelog\s*)', content, re.IGNORECASE)
+        if match:
+            header = match.group(1)
+            if f"## {t_version}" not in content:
+                new_content = content.replace(header, f"{header}\n{new_entry}")
+                with open(c_path, 'w', encoding='utf-8', newline='\n') as f:
+                    f.write(new_content)
+                print(f"Successfully inserted new release notes for {t_version} into CHANGELOG.md")
+            else:
+                print(f"Changelog already contains entry for {t_version}")
+        else:
+            # Если заголовка нет, добавляем его в начало
+            if f"## {t_version}" not in content:
+                new_content = f"# Changelog\n\n{new_entry}" + content
+                with open(c_path, 'w', encoding='utf-8', newline='\n') as f:
+                    f.write(new_content)
+                print(f"Prepended new release notes to CHANGELOG.md")
+    else:
+        # Создаем новый файл CHANGELOG.md
+        with open(c_path, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(f"# Changelog\n\n{new_entry}")
+        print(f"Created CHANGELOG.md with release notes for {t_version}")
 
 # 1. Получение списка тегов с Docker Hub
 url = 'https://hub.docker.com/v2/repositories/dungfu/twitch-drops-miner/tags?page_size=100'
@@ -61,7 +111,7 @@ if not version_tag:
     import datetime
     version_tag = datetime.datetime.utcnow().strftime("16.dev.%Y%m%d")
 
-# Формируем целевую версию (добавляем 'v', если пользователь так просит)
+# Формируем целевую версию
 target_version = version_tag if version_tag.startswith('v') else f"v{version_tag}"
 print(f"Resolved target version: {target_version}")
 
@@ -84,7 +134,12 @@ print(f"Stored local digest: {stored_digest}")
 
 # Проверяем, нужны ли изменения
 if latest_digest == stored_digest and current_version == target_version:
-    print("No updates needed. Everything is up to date.")
+    # Если изменений версии нет, но CHANGELOG.md отсутствует, создаем его для текущей версии
+    if not os.path.exists(changelog_path):
+        print("CHANGELOG.md is missing. Bootstrapping it for current version...")
+        update_changelog(version_tag, target_version, changelog_path)
+    else:
+        print("No updates needed. Everything is up to date.")
     exit(0)
 
 # 3. Обновляем docker_digest.txt
@@ -134,3 +189,6 @@ if os.path.exists(readme_path):
         print("Warning: '**Current Version:** [...](...)' pattern not found in README.md")
 else:
     print(f"Warning: README.md not found at {readme_path}")
+
+# 6. Обновляем CHANGELOG.md
+update_changelog(version_tag, target_version, changelog_path)
