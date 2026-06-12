@@ -15,7 +15,10 @@ It packages the unofficial, lightweight Docker image featuring a native web-base
 ## 🚀 Features
 *   **Ingress Support:** Access the web interface securely directly from the Home Assistant sidebar (no port forwarding required).
 *   **Low Footprint:** Highly optimized, using only ~80MB RAM.
-*   **Automated Updates:** The repository uses GitHub Actions to monitor Docker Hub. When a new docker image is pushed upstream, this addon repository automatically bumps its version so you get an update prompt in Home Assistant.
+*   **Automated Updates:** The repository uses GitHub Actions to monitor Docker Hub. When a new docker image is pushed upstream, this addon repository automatically bumps its version in config, README, and updates links.
+*   **Automated Changelogs:** Automatically retrieves release notes for the new version and updates the `CHANGELOG.md` file, displaying changes directly in the Home Assistant UI.
+*   **Custom Sidebar Icon:** Customized pickaxe icon (`mdi:pickaxe`) matching the mining theme.
+*   **Built-in Nginx Proxy:** Resolves Home Assistant Ingress path prefix and WebSocket proxying issues for ES modules compatibility.
 
 ---
 
@@ -40,4 +43,4 @@ Once installed, you can configure the addon settings:
 *   **Show in sidebar:** Toggle this option to access the Twitch Drops Miner WebUI directly from the Home Assistant sidebar.
 *   **Ingress:** By default, WebUI is accessible securely via Home Assistant's Ingress.
 
-For advanced configurations, Twitch Drops Miner files will be saved in your Home Assistant `/config/twitch_drops_miner` directory.
+For advanced configurations, Twitch Drops Miner configuration files will be saved in your Home Assistant `/addon_configs/twitch_drops_miner/` directory (fully persistent and included in add-on backups).
