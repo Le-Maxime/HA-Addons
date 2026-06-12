@@ -1,0 +1,18 @@
+name: "Twitch Drops Miner"
+description: "AFK mine timed Twitch drops with automatic drop claiming and channel switching"
+version: "v16.dev.8c55d85"
+slug: "twitch_drops_miner"
+init: false
+arch:
+  - aarch64
+  - amd64
+  - armv7
+ingress: true
+ingress_port: 5800
+panel: true
+ports:
+  5800/tcp: 5800
+map:
+  - config:rw
+options: {}
+schema: {}
