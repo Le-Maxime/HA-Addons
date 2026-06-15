@@ -1,0 +1,107 @@
+name: "Free Games Claimer Remaster"
+description: "Automatically claims free weekly/monthly games from Epic Games Store, Prime Gaming, GOG, and Steam."
+version: "v1.1.20260614-cca4992"
+slug: "free_games_claimer"
+init: false
+arch:
+  - amd64
+  - aarch64
+boot: "auto"
+map:
+  - addon_config:rw
+ports:
+  7080/tcp: 7080
+options:
+  show: true
+  width: 1280
+  height: 720
+  scheduler_hours: 12
+  vnc_password: ""
+  stores: "steam,epic,prime,gog"
+  discord_webhook: ""
+  notify: ""
+  notify_summary: true
+  notify_errors: true
+  notify_claim_fails: true
+  notify_login_request: true
+  email: ""
+  password: ""
+  eg_email: ""
+  eg_password: ""
+  eg_otpkey: ""
+  eg_parentalpin: ""
+  pg_email: ""
+  pg_password: ""
+  pg_otpkey: ""
+  pg_force_check_collected: false
+  pg_redeem: false
+  pg_claimdlc: false
+  gog_email: ""
+  gog_password: ""
+  gog_newsletter: false
+  gog_force_redeem: false
+  gog_otp_enable: false
+  gog_otp_codes: ""
+  steam_username: ""
+  steam_password: ""
+  reset_db_games: false
+  fanatical_enable: false
+  fanatical_email: ""
+  fanatical_password: ""
+  alienware_enable: false
+  itchio_enable: false
+  itchio_email: ""
+  itchio_password: ""
+  indiegala_enable: false
+  indiegala_email: ""
+  indiegala_password: ""
+  unknown_stores_enable: false
+  debug: false
+  dryrun: false
+schema:
+  show: bool
+  width: int
+  height: int
+  scheduler_hours: int
+  vnc_password: password?
+  stores: str?
+  discord_webhook: str?
+  notify: str?
+  notify_summary: bool
+  notify_errors: bool
+  notify_claim_fails: bool
+  notify_login_request: bool
+  email: str?
+  password: password?
+  eg_email: str?
+  eg_password: password?
+  eg_otpkey: str?
+  eg_parentalpin: str?
+  pg_email: str?
+  pg_password: password?
+  pg_otpkey: str?
+  pg_force_check_collected: bool
+  pg_redeem: bool
+  pg_claimdlc: bool
+  gog_email: str?
+  gog_password: password?
+  gog_newsletter: bool
+  gog_force_redeem: bool
+  gog_otp_enable: bool
+  gog_otp_codes: str?
+  steam_username: str?
+  steam_password: password?
+  reset_db_games: bool
+  fanatical_enable: bool
+  fanatical_email: str?
+  fanatical_password: password?
+  alienware_enable: bool
+  itchio_enable: bool
+  itchio_email: str?
+  itchio_password: password?
+  indiegala_enable: bool
+  indiegala_email: str?
+  indiegala_password: password?
+  unknown_stores_enable: bool
+  debug: bool
+  dryrun: bool

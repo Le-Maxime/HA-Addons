@@ -1,28 +1,19 @@
-# Twitch Drops Miner — Home Assistant Addon
+# DarkAssassinUA Home Assistant Add-ons Repository
 
-**Current Version:** [v16.dev.8c55d85](https://github.com/fireph/docker-twitch-drops-miner/releases/tag/16.dev.8c55d85)
+Welcome! This is a personal repository of custom Home Assistant add-ons, designed to automate gaming rewards and tasks directly on your Home Assistant server.
 
-This repository contains a custom Home Assistant addon for **Twitch Drops Miner** (a tool for AFK mining Twitch drops with automatic claiming and channel switching). 
+## 📦 Available Add-ons
 
-It packages the unofficial, lightweight Docker image featuring a native web-based interface for easy management directly from your browser.
-
-## 🔗 Credits & References
-*   **Original Application:** [DevilXD/TwitchDropsMiner](https://github.com/DevilXD/TwitchDropsMiner)
-*   **Docker Container Project:** [fireph/docker-twitch-drops-miner](https://github.com/fireph/docker-twitch-drops-miner) (Docker Image: `dungfu/twitch-drops-miner`)
-
----
-
-## 🚀 Features
-*   **Ingress Support:** Access the web interface securely directly from the Home Assistant sidebar (no port forwarding required).
-*   **Low Footprint:** Highly optimized, using only ~80MB RAM.
-*   **Automated Updates:** The repository uses GitHub Actions to monitor Docker Hub. When a new docker image is pushed upstream, this addon repository automatically bumps its version in config, README, and updates links.
-*   **Automated Changelogs:** Automatically retrieves release notes for the new version and updates the `CHANGELOG.md` file, displaying changes directly in the Home Assistant UI.
-*   **Custom Sidebar Icon:** Customized pickaxe icon (`mdi:pickaxe`) matching the mining theme.
-*   **Built-in Nginx Proxy:** Resolves Home Assistant Ingress path prefix and WebSocket proxying issues for ES modules compatibility.
+| Add-on | Directory | Current Version | Original Upstream | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| **Twitch Drops Miner** | [`twitch_drops_miner`](./twitch_drops_miner) | `v16.dev.8c55d85` | [DevilXD/TwitchDropsMiner](https://github.com/DevilXD/TwitchDropsMiner) | AFK Twitch drops mining with automated claiming and Ingress support. |
+| **Free Games Claimer Remaster** | [`free_games_claimer`](./free_games_claimer) | `v1.1.20260614-cca4992` | [P-Adamiec/Free-Games-Claimer-Remaster](https://github.com/P-Adamiec/Free-Games-Claimer-Remaster) | Automatic weekly/monthly free games claimer (Epic, Prime Gaming, GOG, Steam). |
 
 ---
 
-## 🛠️ Installation
+## 🚀 Installation Instructions
+
+To add these addons to your Home Assistant instance:
 
 1.  Copy the URL of this repository:
     ```
@@ -33,14 +24,12 @@ It packages the unofficial, lightweight Docker image featuring a native web-base
 4.  In the top right corner, click the three-dot menu icon and select **Repositories**.
 5.  Paste the repository URL into the field and click **Add**.
 6.  Close the dialog box and refresh the page.
-7.  Scroll down to the bottom of the store, locate **Twitch Drops Miner** under the newly added repository, and click **Install**.
+7.  Scroll down to the bottom of the store, locate the newly added **DarkAssassinUA Home Assistant Apps** section, and select the addon you wish to install.
 
 ---
 
-## ⚙️ Configuration & Access
+## 🛠️ Automated Repository Maintenance
 
-Once installed, you can configure the addon settings:
-*   **Show in sidebar:** Toggle this option to access the Twitch Drops Miner WebUI directly from the Home Assistant sidebar.
-*   **Ingress:** By default, WebUI is accessible securely via Home Assistant's Ingress.
-
-For advanced configurations, Twitch Drops Miner configuration files will be saved in your Home Assistant `/addon_configs/twitch_drops_miner/` directory (fully persistent and included in add-on backups).
+The add-ons in this repository are maintained automatically using **GitHub Actions Workflows**:
+*   **Twitch Drops Miner:** Bumps version, pulls the latest Docker Hub digest, and compiles a CHANGELOG based on upstream releases every 6 hours.
+*   **Free Games Claimer Remaster:** Tracks the main branch commits of the upstream repository, downloads new source code updates, bumps versions, and records commits in the CHANGELOG.
