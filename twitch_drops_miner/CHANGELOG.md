@@ -2,6 +2,19 @@
 
 
 
+
+## v16.dev.27cfc2c
+
+Updated Twitch Drops Miner to v16.dev.27cfc2c
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/27cfc2cba9c915982edb4004fbcd2d19cf5bbae0
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@27cfc2cba9c915982edb4004fbcd2d19cf5bbae0: Fix latent issues in settings sections
+
 ## v16.dev.addf65f
 
 Updated Twitch Drops Miner to v16.dev.addf65f
@@ -43,6 +56,19 @@ Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
 ### Changelog
 
 
+
+
+## v16.dev.27cfc2c
+
+Updated Twitch Drops Miner to v16.dev.27cfc2c
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/27cfc2cba9c915982edb4004fbcd2d19cf5bbae0
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@27cfc2cba9c915982edb4004fbcd2d19cf5bbae0: Fix latent issues in settings sections
 
 ## v16.dev.addf65f
 
