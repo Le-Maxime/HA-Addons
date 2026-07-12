@@ -1,6 +1,23 @@
 # Changelog
 
 
+
+## v16.dev.addf65f
+
+Updated Twitch Drops Miner to v16.dev.addf65f
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/addf65f81ac7d4b58ad9e1b73bea9ea6d9ff23f1
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@4a831fff8bda44a4a046059e3fc7b83eb10fbdf3: Debounce channel table rebuilds to avoid O(N²) during channel fetch
+- fireph/TwitchDropsMiner@d3aca9f48d9dac8ad29d1e50dc304f5080a57e1f: Debounce inventory panel refreshes to avoid O(N²) during campaign fetch
+- fireph/TwitchDropsMiner@bf6397174de9a38baf2d1317f71680755ee8ca40: Debounce console log file writes to avoid blocking the event loop
+- fireph/TwitchDropsMiner@a160e0cb42ea8c965bb74b4c03e2d7b6e6bf89eb: Check close before reload in coro_unless_closed
+- fireph/TwitchDropsMiner@addf65f81ac7d4b58ad9e1b73bea9ea6d9ff23f1: Skip countdown when drop has no remaining minutes
+
 ## v16.dev.421b4ac
 
 Updated Twitch Drops Miner to v16.dev.421b4ac
@@ -25,6 +42,23 @@ Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
 
 ### Changelog
 
+
+
+## v16.dev.addf65f
+
+Updated Twitch Drops Miner to v16.dev.addf65f
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/addf65f81ac7d4b58ad9e1b73bea9ea6d9ff23f1
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@4a831fff8bda44a4a046059e3fc7b83eb10fbdf3: Debounce channel table rebuilds to avoid O(N²) during channel fetch
+- fireph/TwitchDropsMiner@d3aca9f48d9dac8ad29d1e50dc304f5080a57e1f: Debounce inventory panel refreshes to avoid O(N²) during campaign fetch
+- fireph/TwitchDropsMiner@bf6397174de9a38baf2d1317f71680755ee8ca40: Debounce console log file writes to avoid blocking the event loop
+- fireph/TwitchDropsMiner@a160e0cb42ea8c965bb74b4c03e2d7b6e6bf89eb: Check close before reload in coro_unless_closed
+- fireph/TwitchDropsMiner@addf65f81ac7d4b58ad9e1b73bea9ea6d9ff23f1: Skip countdown when drop has no remaining minutes
 
 ## v16.dev.421b4ac
 
