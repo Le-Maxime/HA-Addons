@@ -4,6 +4,19 @@
 
 
 
+
+## v16.dev.f6affcf
+
+Updated Twitch Drops Miner to v16.dev.f6affcf
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/f6affcf7c78c23dfdcca230bbcc23e417e12078c
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@f6affcf7c78c23dfdcca230bbcc23e417e12078c: better validate/test ordering and improved validate
+
 ## v16.dev.e759941
 
 Updated Twitch Drops Miner to v16.dev.e759941
@@ -72,6 +85,19 @@ Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
 
 
 
+
+
+## v16.dev.f6affcf
+
+Updated Twitch Drops Miner to v16.dev.f6affcf
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/f6affcf7c78c23dfdcca230bbcc23e417e12078c
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@f6affcf7c78c23dfdcca230bbcc23e417e12078c: better validate/test ordering and improved validate
 
 ## v16.dev.e759941
 

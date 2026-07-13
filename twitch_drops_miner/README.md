@@ -1,6 +1,6 @@
 # Twitch Drops Miner — Home Assistant Addon
 
-**Current Version:** [v16.dev.e759941](https://github.com/fireph/docker-twitch-drops-miner/releases/tag/16.dev.e759941)
+**Current Version:** [v16.dev.f6affcf](https://github.com/fireph/docker-twitch-drops-miner/releases/tag/16.dev.f6affcf)
 
 This addon packages **Twitch Drops Miner** (a tool for AFK mining Twitch drops with automatic claiming and channel switching) as a Home Assistant addon.
 
