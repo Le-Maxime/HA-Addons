@@ -3,6 +3,20 @@
 
 
 
+
+## v16.dev.e759941
+
+Updated Twitch Drops Miner to v16.dev.e759941
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/e759941f37a086f18eb0f6bd5171c95b9a353f38
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@91f8ae6efa03c40d85b1844ff2df74cb95c8a5e9: properly merge translation dicts so that default lang is overridden
+- fireph/TwitchDropsMiner@e759941f37a086f18eb0f6bd5171c95b9a353f38: add translations and improve translation tests
+
 ## v16.dev.27cfc2c
 
 Updated Twitch Drops Miner to v16.dev.27cfc2c
@@ -57,6 +71,20 @@ Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
 
 
 
+
+
+## v16.dev.e759941
+
+Updated Twitch Drops Miner to v16.dev.e759941
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/e759941f37a086f18eb0f6bd5171c95b9a353f38
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@91f8ae6efa03c40d85b1844ff2df74cb95c8a5e9: properly merge translation dicts so that default lang is overridden
+- fireph/TwitchDropsMiner@e759941f37a086f18eb0f6bd5171c95b9a353f38: add translations and improve translation tests
 
 ## v16.dev.27cfc2c
 
