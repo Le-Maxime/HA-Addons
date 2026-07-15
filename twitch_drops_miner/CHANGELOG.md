@@ -5,6 +5,20 @@
 
 
 
+
+## v16.dev.25d88e5
+
+Updated Twitch Drops Miner to v16.dev.25d88e5
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/25d88e5c525b5c4fcacb80e72bf594faa707d7ed
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@7f09d3a147861df322065b7ce37e798ad1a80be6: DirectoryPage_Game hash update
+- fireph/TwitchDropsMiner@25d88e5c525b5c4fcacb80e72bf594faa707d7ed: Merge remote-tracking branch 'upstream/master' into webui
+
 ## v16.dev.f6affcf
 
 Updated Twitch Drops Miner to v16.dev.f6affcf
@@ -86,6 +100,20 @@ Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
 
 
 
+
+
+## v16.dev.25d88e5
+
+Updated Twitch Drops Miner to v16.dev.25d88e5
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/25d88e5c525b5c4fcacb80e72bf594faa707d7ed
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@7f09d3a147861df322065b7ce37e798ad1a80be6: DirectoryPage_Game hash update
+- fireph/TwitchDropsMiner@25d88e5c525b5c4fcacb80e72bf594faa707d7ed: Merge remote-tracking branch 'upstream/master' into webui
 
 ## v16.dev.f6affcf
 
