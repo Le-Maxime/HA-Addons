@@ -6,6 +6,20 @@
 
 
 
+
+## v16.dev.a75d4f6
+
+Updated Twitch Drops Miner to v16.dev.a75d4f6
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/a75d4f6bf52ae20b5c4a8a518cb5ad99f4ecf454
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@c233d5a9c29363680420db1b29bbb5922ac75832: Update Chinese(Simplified) and Chinese(Traditional) translation
+- fireph/TwitchDropsMiner@a75d4f6bf52ae20b5c4a8a518cb5ad99f4ecf454: Merge remote-tracking branch 'upstream/master' into webui
+
 ## v16.dev.25d88e5
 
 Updated Twitch Drops Miner to v16.dev.25d88e5
@@ -101,6 +115,20 @@ Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
 
 
 
+
+
+## v16.dev.a75d4f6
+
+Updated Twitch Drops Miner to v16.dev.a75d4f6
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/a75d4f6bf52ae20b5c4a8a518cb5ad99f4ecf454
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@c233d5a9c29363680420db1b29bbb5922ac75832: Update Chinese(Simplified) and Chinese(Traditional) translation
+- fireph/TwitchDropsMiner@a75d4f6bf52ae20b5c4a8a518cb5ad99f4ecf454: Merge remote-tracking branch 'upstream/master' into webui
 
 ## v16.dev.25d88e5
 
