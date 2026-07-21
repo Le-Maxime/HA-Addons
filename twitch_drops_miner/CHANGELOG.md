@@ -8,6 +8,20 @@
 
 
 
+
+## v16.dev.090e59c
+
+Updated Twitch Drops Miner to v16.dev.090e59c
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/090e59ceaf61e240d679e51390419497e3c67d8f
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@3aec843bbb91a7d00f7bd7784e92bd97e3ee8a5f: Fix UI freeze during maintenance reloads on Wayland/Linux (#1114)
+- fireph/TwitchDropsMiner@090e59ceaf61e240d679e51390419497e3c67d8f: Merge remote-tracking branch 'upstream/master' into webui
+
 ## v16.dev.0b509d0
 
 Updated Twitch Drops Miner to v16.dev.0b509d0
@@ -131,6 +145,20 @@ Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
 
 
 
+
+
+## v16.dev.090e59c
+
+Updated Twitch Drops Miner to v16.dev.090e59c
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/090e59ceaf61e240d679e51390419497e3c67d8f
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@3aec843bbb91a7d00f7bd7784e92bd97e3ee8a5f: Fix UI freeze during maintenance reloads on Wayland/Linux (#1114)
+- fireph/TwitchDropsMiner@090e59ceaf61e240d679e51390419497e3c67d8f: Merge remote-tracking branch 'upstream/master' into webui
 
 ## v16.dev.0b509d0
 
