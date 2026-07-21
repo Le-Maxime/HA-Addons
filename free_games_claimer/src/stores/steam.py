@@ -12,7 +12,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from src.core.claimer import BaseClaimer, now_str, filenamify
 from src.core.config import cfg
 from src.core.database import async_session, get_or_create
-from src.core.notifier import notify, format_game_list
+from src.core.url_security import url_has_allowed_host
 
 logger = logging.getLogger("fgc.steam")
 
@@ -71,7 +71,7 @@ class SteamClaimer(BaseClaimer):
         except Exception as exc:
             logger.exception("Fatal error")
             if cfg.notify_errors:
-                await notify(f"steam failed: {exc}")
+                await self.notify(f"steam failed: {exc}")
         finally:
             # Send notification with newly claimed games
             has_new = [g for g in self.notify_games if g["status"] == "claimed"]
@@ -95,6 +95,14 @@ class SteamClaimer(BaseClaimer):
 
             await self.page.get(STEAMDB_FREE_URL)
             await self.sleep(10)  # Wait for page load and any invisible Turnstile checks
+
+            # SteamDB is behind Cloudflare; if the human-check shows instead of the listing, hand off to VNC.
+            if await self._human_challenge_present():
+                if await self._wait_out_challenge("Steam / SteamDB"):
+                    await self.sleep(3)  # let the real listing finish loading
+                else:
+                    logger.warning("SteamDB Cloudflare challenge not cleared in time – skipping SteamDB.")
+                    return []
 
             html_raw = await self.page.evaluate("document.documentElement.outerHTML")
             html = html_raw if isinstance(html_raw, str) else ""
@@ -342,7 +350,7 @@ class SteamClaimer(BaseClaimer):
             
             # Login is complete when we reach the store domain
             # (checking "/login" not in url was fragile — CAPTCHA/challenge redirects broke the loop)
-            if "store.steampowered.com" in current_url and "/login" not in current_url:
+            if url_has_allowed_host(current_url, "store.steampowered.com") and "/login" not in current_url:
                 logger.debug("Login redirect detected, Steam Guard not needed or already passed")
                 return
             
@@ -365,14 +373,18 @@ class SteamClaimer(BaseClaimer):
             ''')
             
             if has_guard:
-                logger.warning("⚠ Steam Guard detected! Please enter the code via VNC or approve on your phone. (Waiting up to 2 min)")
-                if cfg.notify_errors:
-                    await notify("Steam Guard code required! Open VNC and enter the code, or approve on your mobile app.")
+                logger.warning("⚠ Steam Guard detected! Open %s to enter the code via VNC or approve on your phone. (Waiting up to 2 min)", cfg.vnc_url)
+                if cfg.notify_login_request:
+                    await self.notify(self._vnc_notice(
+                        "Steam — Steam Guard code needed",
+                        "Enter the Steam Guard code in the browser, or approve the login on your Steam mobile app.",
+                        120,
+                    ))
                 
                 # Wait for user to complete Steam Guard
                 for guard_wait in range(120):
                     guard_url = await self.page.evaluate("window.location.href")
-                    if "store.steampowered.com" in guard_url and "/login" not in guard_url:
+                    if url_has_allowed_host(guard_url, "store.steampowered.com") and "/login" not in guard_url:
                         logger.info("Steam Guard passed successfully!")
                         return
                     await self.sleep(1)
@@ -589,6 +601,11 @@ class SteamClaimer(BaseClaimer):
                            "Will not purchase paid content.", page_title, paid_price)
             notify_game["status"] = "skipped:paid"
             await self.take_screenshot(f"steam_paid_skip_{filenamify(page_title)}")
+            return
+
+        if cfg.dryrun:
+            logger.info("DRYRUN – skipped '%s'.", page_title)
+            notify_game["status"] = "available (dry run)"
             return
 
         # Try to claim – look for various claim buttons (language-agnostic)

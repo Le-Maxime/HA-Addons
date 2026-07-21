@@ -17,20 +17,23 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sys
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from src.core.config import cfg
 from src.core.database import init_db
+from src.stores.aliexpress import claim_aliexpress
 from src.stores.epic import claim_epic
 from src.stores.gamerpower import claim_gamerpower
 from src.stores.gog import claim_gog
 from src.stores.prime import claim_prime
 from src.stores.steam import claim_steam
 from src.core.notifier import notify
-from src.version import __version__, __author__, __repo__
+from src.version import __version__, __author__, __repo__, __contributors__
 
 # ---------------------------------------------------------------------------
 # Logging – user-friendly by default, verbose only on errors
@@ -45,8 +48,8 @@ class StorePrefixFilter(logging.Filter):
     def filter(self, record):
         if record.name.startswith("fgc."):
             store = record.name.split(".")[-1]
-            if store in ("epic", "steam", "gog", "prime"):
-                store_map = {"gog": "GOG", "epic": "Epic", "steam": "Steam", "prime": "Prime"}
+            if store in ("epic", "steam", "gog", "prime", "aliexpress"):
+                store_map = {"gog": "GOG", "epic": "Epic", "steam": "Steam", "prime": "Prime", "aliexpress": "AliExpress"}
                 prefix = escape(f"[{store_map[store]}]")
                 # Prepend to the message template
                 record.msg = f"{prefix} {record.msg}"
@@ -88,7 +91,17 @@ ALL_CLAIMERS: dict[str, tuple[str, object]] = {
     "prime":      ("Prime Gaming", claim_prime),
     "gog":        ("GOG",          claim_gog),
     "gamerpower": ("GamerPower",   claim_gamerpower),
+    "aliexpress": ("AliExpress",   claim_aliexpress),
 }
+
+# Display name (e.g. "Prime Gaming") → canonical store key (e.g. "prime").
+_DISPLAY_TO_KEY: dict[str, str] = {disp: key for key, (disp, _) in ALL_CLAIMERS.items()}
+
+
+def _store_key(name: str) -> str:
+    """Map a display name or key to the canonical store key."""
+    return _DISPLAY_TO_KEY.get(name, (name or "").lower())
+
 
 # Accepted aliases → canonical name
 _ALIASES: dict[str, str] = {
@@ -104,7 +117,69 @@ _ALIASES: dict[str, str] = {
     "gog":           "gog",
     "gamerpower":    "gamerpower",
     "gp":            "gamerpower",
+    "aliexpress":    "aliexpress",
+    "ae":            "aliexpress",
 }
+
+_FIXED_TIME_RE = re.compile(r"^\d{2}:\d{2}$")
+_CLAIM_JOB_OPTIONS = {
+    "max_instances": 1,
+    "coalesce": True,
+    "misfire_grace_time": 1800,
+}
+_claim_run_lock = asyncio.Lock()
+
+
+def _parse_fixed_times(raw: str) -> list[tuple[int, int]]:
+    """Parse SCHEDULER_FIXED_TIMES as comma-separated HH:MM values."""
+    if not raw.strip():
+        return []
+
+    fixed_times: list[tuple[int, int]] = []
+    invalid: list[str] = []
+    seen: set[tuple[int, int]] = set()
+
+    for value in (part.strip() for part in raw.split(",")):
+        if not value:
+            continue
+
+        if not _FIXED_TIME_RE.fullmatch(value):
+            invalid.append(value)
+            continue
+
+        hour, minute = (int(part) for part in value.split(":", 1))
+        if hour > 23 or minute > 59:
+            invalid.append(value)
+            continue
+
+        key = (hour, minute)
+        if key in seen:
+            continue
+
+        seen.add(key)
+        fixed_times.append(key)
+
+    if invalid:
+        logger.warning(
+            "Ignoring invalid SCHEDULER_FIXED_TIMES value(s): %s. "
+            "Use comma-separated HH:MM times, for example 07:30,17:05,21:30.",
+            ", ".join(invalid),
+        )
+
+    return fixed_times
+
+
+def _scheduler_timezone() -> ZoneInfo:
+    """Return the configured scheduler timezone or fail with a clear message."""
+    try:
+        return ZoneInfo(cfg.scheduler_timezone)
+    except ZoneInfoNotFoundError as exc:
+        logger.error(
+            "Invalid SCHEDULER_TIMEZONE '%s'. Use an IANA timezone name "
+            "such as UTC, Europe/Berlin, America/New_York, or Asia/Tokyo.",
+            cfg.scheduler_timezone,
+        )
+        raise SystemExit(2) from exc
 
 
 def _resolve_stores(raw: list[str]) -> list[str]:
@@ -137,7 +212,7 @@ def _get_active_claimers() -> list[tuple[str, object]]:
     elif cfg.stores:
         selected = _resolve_stores([s for s in cfg.stores.split(",") if s.strip()])
     else:
-        selected = ["steam", "epic", "prime", "gog"]
+        selected = ["steam", "epic", "prime", "gog", "aliexpress"]
 
     return [(ALL_CLAIMERS[k][0], ALL_CLAIMERS[k][1]) for k in selected if k in ALL_CLAIMERS]
 
@@ -154,6 +229,12 @@ def _print_banner() -> None:
         f"  by {__author__}",
         f"  {__repo__}",
     ]
+    if __contributors__:
+        contrib_str = ", ".join(__contributors__)
+        lines.extend([
+            "",
+            f"  Special thanks to project contributors: {contrib_str}",
+        ])
     print(f"\n╔{'═' * W}╗")
     for line in lines:
         print(f"║{line.ljust(W)}║")
@@ -184,7 +265,8 @@ async def run_claimers() -> None:
                 aggregated_results.append(res)
         except Exception:
             logger.exception("✗ %s crashed", name)
-            await notify(f"{name} claimer crashed with an unhandled exception. Check logs.")
+            if cfg.store_notify_enabled(_store_key(name)):
+                await notify(f"{name} claimer crashed with an unhandled exception. Check logs.")
 
     # After standard claimers finish, check for pending GOG codes from Prime Gaming.
     # Only run if there are actually codes with status="claimed" waiting,
@@ -230,13 +312,16 @@ async def run_claimers() -> None:
         from src.core.notifier import format_game_list
         msg_parts = []
         for result in aggregated_results:
-            # Filter out games that were "existed" or "already redeemed"
+            # Skip stores whose notifications are silenced (NOTIFY_SKIP_STORES).
+            if not cfg.store_notify_enabled(_store_key(result.get("store", ""))):
+                continue
+            # Filter out games that were "existed" or "already redeemed", unless it's a dry run
             relevant_games = [
                 g for g in result["games"]
                 if "status" in g 
                 and "exist" not in g["status"].lower() 
                 and "already" not in g["status"].lower()
-                and "skip" not in g["status"].lower()
+                and ("skip" not in g["status"].lower() or "dry run" in g["status"].lower())
             ]
             
             if not relevant_games:
@@ -247,9 +332,21 @@ async def run_claimers() -> None:
             
         if msg_parts:
             final_msg = "\n\n".join(msg_parts)
+            if cfg.dryrun:
+                final_msg = "🛑 **DRY RUN SUMMARY — Games Remaining to be Claimed:**\n\n" + final_msg
             await notify(final_msg)
 
     logger.info("✔ Claiming run complete.")
+
+
+async def run_claimers_scheduled() -> None:
+    """Run claimers from scheduler jobs without overlapping executions."""
+    if _claim_run_lock.locked():
+        logger.warning("A claiming run is already in progress; skipping this scheduled trigger.")
+        return
+
+    async with _claim_run_lock:
+        await run_claimers()
 
 
 async def main() -> None:
@@ -277,34 +374,82 @@ async def main() -> None:
         except Exception as e:
             logger.error("Failed to reset DB games: %s", e)
 
+    # Send a test notification if NOTIFY_TEST=true (for verifying notification setup)
+    if cfg.notify_test:
+        logger.info("🔔 NOTIFY_TEST=true — sending test notification...")
+        services = ", ".join(filter(None, [
+            "Discord" if cfg.discord_webhook else None,
+            "Apprise" if cfg.notify_url else None,
+        ])) or "⚠️ None configured"
+        test_msg = (
+            "🔔 **Free Games Claimer — Test Notification**\n\n"
+            "✅ If you see this message, your notification setup is working correctly!\n\n"
+            f"**Version:** v{__version__}\n"
+            f"**Services:** {services}"
+        )
+        await notify(test_msg)
+        logger.info("✅ Test notification dispatched! Check your configured services. "
+                     "Set NOTIFY_TEST=0 in your .env to disable this on future restarts.")
+
     # If --once flag is set, run a single pass and exit
     if "--once" in sys.argv:
         await run_claimers()
         return
 
     # Otherwise start the scheduler
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(
-        run_claimers,
-        trigger=CronTrigger(hour=f"*/{cfg.scheduler_hours}"),  # every X hours
-        id="claim_all",
-        name="Claim free games",
-        replace_existing=True,
-    )
+    fixed_times = _parse_fixed_times(cfg.scheduler_fixed_times)
+    fixed_timezone = _scheduler_timezone() if fixed_times else None
+
+    scheduler = AsyncIOScheduler(job_defaults=_CLAIM_JOB_OPTIONS)
+    if cfg.scheduler_hours > 0:
+        scheduler.add_job(
+            run_claimers_scheduled,
+            trigger=CronTrigger(hour=f"*/{cfg.scheduler_hours}"),  # every X hours
+            id="claim_all",
+            name="Claim free games",
+            replace_existing=True,
+        )
+    else:
+        logger.info("Interval scheduler disabled because SCHEDULER_HOURS=%s.", cfg.scheduler_hours)
+
+    for hour, minute in fixed_times:
+        scheduler.add_job(
+            run_claimers_scheduled,
+            trigger=CronTrigger(hour=hour, minute=minute, timezone=fixed_timezone),
+            id=f"claim_fixed_{hour:02d}_{minute:02d}",
+            name=f"Claim free games at {hour:02d}:{minute:02d}",
+            replace_existing=True,
+        )
 
     # Delay slightly to ensure TurboVNC/X11 is fully initialized BEFORE starting Chrome
     logger.info("Waiting for virtual display to initialize...")
     await asyncio.sleep(3)
 
     # Also run immediately on startup
-    scheduler.add_job(
-        run_claimers,
-        id="claim_all_startup",
-        name="Initial claiming run",
-    )
+    if cfg.run_on_startup:
+        scheduler.add_job(
+            run_claimers_scheduled,
+            id="claim_all_startup",
+            name="Initial claiming run",
+            replace_existing=True,
+        )
+    else:
+        logger.info("Initial claiming run disabled by RUN_ON_STARTUP=false.")
 
     scheduler.start()
-    logger.info("⏱ Scheduler active – runs every %s hours.", cfg.scheduler_hours)
+    interval_text = (
+        f"runs every {cfg.scheduler_hours} hours"
+        if cfg.scheduler_hours > 0
+        else "interval disabled"
+    )
+    fixed_text = (
+        "fixed daily times: "
+        + ", ".join(f"{hour:02d}:{minute:02d}" for hour, minute in fixed_times)
+        + f" ({cfg.scheduler_timezone})"
+        if fixed_times
+        else "no fixed daily times configured"
+    )
+    logger.info("Scheduler active - %s; %s.", interval_text, fixed_text)
 
     try:
         # Keep the event loop alive

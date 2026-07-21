@@ -16,8 +16,8 @@ from sqlalchemy import select
 from src.core.claimer import BaseClaimer
 from src.core.config import cfg
 from src.core.database import async_session, ClaimedGame, get_or_create
+from src.core.url_security import url_has_allowed_host
 import logging
-from src.core.notifier import notify, format_game_list
 from src.core.claimer import filenamify
 
 logger = logging.getLogger("fgc.gamerpower")
@@ -104,7 +104,7 @@ class GamerPowerClaimer(BaseClaimer):
         except Exception as exc:
             logger.exception("Fatal error in GamerPower")
             if cfg.notify_errors:
-                await notify(f"gamerpower failed: {exc}")
+                await self.notify(f"gamerpower failed: {exc}")
         finally:
             # Summary notifications deferred to main.py
             await self.close_browser()
@@ -130,13 +130,13 @@ class GamerPowerClaimer(BaseClaimer):
         
         if any(s in final_url for s in ("store.steampowered", "epicgames.com", "gog.com", "playstation", "xbox", "nintendo")):
             target_store = "major_store"
-        elif "fanatical.com" in final_url:
+        elif url_has_allowed_host(final_url, "fanatical.com", allow_subdomains=True):
             target_store = "fanatical"
-        elif "alienwarearena.com" in final_url:
+        elif url_has_allowed_host(final_url, "alienwarearena.com", allow_subdomains=True):
             target_store = "alienware"
-        elif "itch.io" in final_url:
+        elif url_has_allowed_host(final_url, "itch.io", allow_subdomains=True):
             target_store = "itchio"
-        elif "indiegala.com" in final_url:
+        elif url_has_allowed_host(final_url, "indiegala.com", allow_subdomains=True):
             target_store = "indiegala"
 
         # Special fallback instruction checks just in case the link itself doesn't contain the domain explicitly

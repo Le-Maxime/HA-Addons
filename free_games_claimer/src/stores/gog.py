@@ -11,7 +11,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from src.core.claimer import BaseClaimer, now_str
 from src.core.config import cfg
 from src.core.database import async_session, get_or_create
-from src.core.notifier import notify, format_game_list
+from src.core.url_security import url_has_allowed_host
 
 logger = logging.getLogger("fgc.gog")
 
@@ -44,7 +44,7 @@ class GOGClaimer(BaseClaimer):
             logger.exception("Fatal error")
             # Send a notification about the crash if notifications are enabled
             if cfg.notify_errors:
-                await notify(f"gog failed: {exc}")
+                await self.notify(f"gog failed: {exc}")
         finally:
             # Always close the browser, even if there was an error
             await self.close_browser()
@@ -320,9 +320,13 @@ class GOGClaimer(BaseClaimer):
                     return False
                     
                 logged_in = await self._wait_for_vnc_login(
-                    _vnc_check_gog_2fa, 
+                    _vnc_check_gog_2fa,
                     timeout=180,
-                    custom_msg=f"GOG requires 2FA verification! Open http://{cfg.vnc_ip}:{cfg.novnc_port or 7080} to enter the code via VNC..."
+                    custom_msg=self._vnc_notice(
+                        "GOG — 2FA code needed",
+                        "GOG needs a 2FA verification code. Open the browser and enter it.",
+                        180,
+                    ),
                 )
                 if logged_in:
                     self.log_signed_in()
@@ -404,6 +408,7 @@ class GOGClaimer(BaseClaimer):
         # In dry run mode, log the game but don't actually claim it
         if cfg.dryrun:
             logger.info("DRYRUN – skipped '%s'.", title)
+            self.notify_games.append({"title": title, "url": "https://www.gog.com", "status": "available (dry run)"})
             return
 
         # GOG has a direct claim endpoint that returns a JSON response.
@@ -526,13 +531,6 @@ class GOGClaimer(BaseClaimer):
             # Redeem each GOG code one by one
             for g in gog_games:
                 await self._redeem_gog_code(g.code, g.title, g.url)
-                
-            # Send a notification summary of all redeemed codes
-            claimed = [g for g in self.notify_games if g["status"] != "existed"]
-            if claimed and cfg.notify_summary:
-                from src.core.notifier import format_game_list, notify
-                msg = f"**GOG Auto-Redeemer**:\n{format_game_list(self.notify_games)}"
-                await notify(msg)
         except Exception:
             logger.exception("Fatal error during pending codes redemption")
         finally:
@@ -551,7 +549,7 @@ class GOGClaimer(BaseClaimer):
 
             # Check if redirected to login
             current_url = await self.page.evaluate("window.location.href")
-            if isinstance(current_url, str) and "login.gog.com" in current_url:
+            if isinstance(current_url, str) and url_has_allowed_host(current_url, "login.gog.com"):
                 logger.warning("Not logged in to GOG – need manual login via VNC.")
                 async def _gog_logged_in() -> bool:
                     cur = await self.page.evaluate("window.location.href")

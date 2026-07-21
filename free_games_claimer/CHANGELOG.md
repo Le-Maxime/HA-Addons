@@ -1,5 +1,10 @@
 # Changelog
 
+
+## v1.1.20260721-3808055
+
+Upstream update: v1.4: AliExpress check-in improvements, fingerprinting & store fixes, etc.
+
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 

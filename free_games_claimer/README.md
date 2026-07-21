@@ -1,6 +1,6 @@
 # Free Games Claimer Remaster — Home Assistant Addon
 
-**Current Version:** [v1.1.20260614-cca4992](https://github.com/P-Adamiec/Free-Games-Claimer-Remaster/commit/cca4992)
+**Current Version:** [v1.1.20260721-3808055](https://github.com/P-Adamiec/Free-Games-Claimer-Remaster/commit/3808055)
 
 *   **Original Application:** [P-Adamiec/Free-Games-Claimer-Remaster](https://github.com/P-Adamiec/Free-Games-Claimer-Remaster)
 

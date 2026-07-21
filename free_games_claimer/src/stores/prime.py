@@ -13,7 +13,6 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from src.core.claimer import BaseClaimer, now_str, filenamify
 from src.core.config import cfg
 from src.core.database import async_session, get_or_create
-from src.core.notifier import notify, format_game_list
 
 logger = logging.getLogger("fgc.prime")
 
@@ -59,6 +58,36 @@ class PrimeGamingClaimer(BaseClaimer):
         try:
             # Step 1: Open a browser and navigate to the Prime Gaming claims page
             await self.start_browser()
+
+            # Force the password path: kill WebAuthn + Amazon's passkey/mshop sign-in forms.
+            try:
+                await self.page.send(
+                    uc.cdp.page.add_script_to_evaluate_on_new_document(
+                        source="""
+                            try { Object.defineProperty(window, 'PublicKeyCredential', { configurable: true, get: () => undefined }); } catch (e) {}
+                            try {
+                                const noop = () => new Promise(() => {});  // never resolves, so no passkey error
+                                if (navigator.credentials) { navigator.credentials.get = noop; navigator.credentials.create = noop; }
+                            } catch (e) {}
+                            (function () {
+                                // Remove the wrong sign-in forms; leave only form[name="signIn"] (password).
+                                const KILL = ['form[name="signInWithPasskeyButton"]', 'form[name="signInWithMShopButton"]', '#auth-signin-via-passkey-section', '#auth-signin-via-passkey-btn'];
+                                const sweep = () => { try {
+                                    KILL.forEach(s => document.querySelectorAll(s).forEach(el => el.remove()));
+                                    document.querySelectorAll('[data-action="SIGNIN_PASSKEY_COLLECT"]').forEach(el => el.removeAttribute('data-action'));
+                                } catch (e) {} };
+                                try {
+                                    sweep();
+                                    document.addEventListener('DOMContentLoaded', sweep);
+                                    new MutationObserver(sweep).observe(document, { childList: true, subtree: true });
+                                } catch (e) {}
+                            })();
+                        """
+                    )
+                )
+            except Exception as e:
+                self.logger.debug("Passkey neutralization script injection exception: %s", e)
+
             await self.page.get(URL_CLAIM)
             await self.sleep(4)
 
@@ -74,7 +103,7 @@ class PrimeGamingClaimer(BaseClaimer):
         except Exception as exc:
             logger.exception("Fatal error")
             if cfg.notify_errors:
-                await notify(f"prime-gaming failed: {exc}")
+                await self.notify(f"prime-gaming failed: {exc}")
         finally:
             # Export claimed games with codes to a JSON file for user convenience
             try:
@@ -130,6 +159,82 @@ class PrimeGamingClaimer(BaseClaimer):
     # Login
     # ------------------------------------------------------------------
 
+    async def _click_sign_in(self) -> bool:
+        """Click Luna's exact sign-in button, never a fuzzy 'Sign in' text match."""
+        try:
+            btn = await self.page.select('button[data-a-target="sign-in-button"]', timeout=4)
+            if btn:
+                await btn.click()
+                return True
+        except Exception:
+            pass
+        # Fallback: mark the element whose EXACT text is 'Sign in' and click it.
+        try:
+            marked = await self.page.evaluate("""
+                (() => {
+                    const el = [...document.querySelectorAll('button, a, [role="button"]')]
+                        .find(b => (b.textContent || '').trim() === 'Sign in');
+                    if (el) { el.setAttribute('data-fgc-signin', '1'); return true; }
+                    return false;
+                })()
+            """)
+            if marked:
+                el = await self.page.select('[data-fgc-signin="1"]', timeout=2)
+                if el:
+                    await el.click()
+                    return True
+        except Exception:
+            pass
+        return False
+
+    async def _passkey_error_present(self) -> bool:
+        """True when Amazon's passkey error is showing (a dead-end for the bot)."""
+        try:
+            return bool(await self.page.evaluate("""
+                (() => {
+                    const el = document.querySelector('#passkey-error-alert');
+                    if (el && el.offsetParent !== null && !(el.className || '').includes('aok-hidden')) return true;
+                    const b = (document.body ? (document.body.innerText || '') : '').toLowerCase();
+                    return b.includes('no passkeys for this account') || b.includes("your passkey isn't working");
+                })()
+            """))
+        except Exception:
+            return False
+
+    async def _is_signed_in(self) -> bool:
+        """Return True on a positive Luna signed-in signal (account header)."""
+        result = await self.page.evaluate(
+            """
+            JSON.stringify((() => {
+                const vis = (el) => !!el && el.offsetParent !== null;
+                const name = document.querySelector('[data-a-target="user-dropdown-first-name-text"]');
+                if (name) {
+                    const t = (name.textContent || '').trim();
+                    if (t.length > 0) return { loggedIn: true, user: t };
+                }
+                // Account dropdown exists only when signed in.
+                if (document.querySelector('[data-a-target="amazon-dropdown-header-interactable"], [data-a-target="amazon-dropdown-header-message"]')) {
+                    return { loggedIn: true, user: '' };
+                }
+                // A visible sign-in button means signed out.
+                if (vis(document.querySelector('[data-a-target="sign-in-button"]'))) return { loggedIn: false, user: '' };
+                return { loggedIn: false, user: '' };
+            })())
+            """
+        )
+        try:
+            data = json.loads(result) if isinstance(result, str) else {}
+        except (json.JSONDecodeError, TypeError):
+            data = {}
+        if data.get("loggedIn"):
+            user = data.get("user", "")
+            if user:
+                self.user = user
+            elif not self.user:
+                self.user = "unknown"
+            return True
+        return False
+
     async def _ensure_logged_in(self, silent_if_logged_in: bool = False) -> None:
         """Check if logged in; if not, click 'Sign in' in a loop until logged in.
 
@@ -138,28 +243,6 @@ class PrimeGamingClaimer(BaseClaimer):
         This while loop keeps clicking and re-checking.
         """
         await self.sleep(3)
-
-        async def _is_logged_in() -> bool:
-            result = await self.page.evaluate(
-                """
-                JSON.stringify((() => {
-                    const el = document.querySelector('[data-a-target="user-dropdown-first-name-text"]');
-                    if (el) {
-                        const text = (el.textContent || '').trim();
-                        if (text.length > 0) return { loggedIn: true, user: text };
-                    }
-                    return { loggedIn: false, user: '' };
-                })())
-                """
-            )
-            try:
-                data = json.loads(result) if isinstance(result, str) else {}
-            except (json.JSONDecodeError, TypeError):
-                data = {}
-            if data.get("loggedIn"):
-                self.user = data.get("user", "") or "unknown"
-                return True
-            return False
 
         async def _has_sign_in_button() -> bool:
             result = await self.page.evaluate(
@@ -176,7 +259,7 @@ class PrimeGamingClaimer(BaseClaimer):
                 data = {}
             return data.get("found", False)
 
-        if await _is_logged_in():
+        if await self._is_signed_in():
             if not silent_if_logged_in:
                 self.log_signed_in()
             return
@@ -192,22 +275,20 @@ class PrimeGamingClaimer(BaseClaimer):
             if not await _has_sign_in_button():
                 # No sign in button, but also not logged in — wait a moment and recheck
                 await self.sleep(3)
-                if await _is_logged_in():
+                if await self._is_signed_in():
                     break
                 # Maybe page hasn't loaded yet, reload
                 await self.page.get(URL_CLAIM)
                 await self.sleep(4)
-                if await _is_logged_in():
+                if await self._is_signed_in():
                     break
                 continue
 
             logger.warning("'Sign in' button found (attempt %d/%d) – clicking…",
                            attempt + 1, max_attempts)
 
-            # Click the Sign in button
-            sign_in_btn = await self.page.find("Sign in", timeout=5)
-            if sign_in_btn:
-                await sign_in_btn.click()
+            # Click the exact Luna sign-in button (not fuzzy 'Sign in' text).
+            if await self._click_sign_in():
                 await self.sleep(3)
 
             if email and password:
@@ -215,12 +296,16 @@ class PrimeGamingClaimer(BaseClaimer):
                 current_url = await self.page.evaluate("window.location.href")
                 if isinstance(current_url, str) and ("signin" in current_url or "ap/signin" in current_url):
                     await self._do_login()
+                    # A passkey dead-end won't clear by retrying — hand off to VNC.
+                    if await self._passkey_error_present():
+                        logger.warning("Amazon passkey error – automated login can't proceed.")
+                        break
             else:
                 if attempt == 0:
                     logger.warning("PG_EMAIL / PG_PASSWORD not set. Waiting for VNC login...")
                     
                     async def _vnc_check() -> bool:
-                        if await _is_logged_in():
+                        if await self._is_signed_in():
                             return True
                             
                         # Workaround: sometimes Amazon redirects to home page but drops
@@ -228,10 +313,8 @@ class PrimeGamingClaimer(BaseClaimer):
                         url = await self.page.evaluate("window.location.href")
                         if isinstance(url, str) and ("claims/home" in url or "gaming.amazon" in url):
                             if await _has_sign_in_button():
-                                btn = await self.page.find("Sign in", timeout=1)
-                                if btn:
-                                    logger.info("Auto-clicking 'Sign in' again during manual wait (redirect bug)...")
-                                    await btn.click()
+                                logger.info("Auto-clicking 'Sign in' again during manual wait (redirect bug)...")
+                                if await self._click_sign_in():
                                     await self.sleep(3)
                         return False
 
@@ -244,18 +327,69 @@ class PrimeGamingClaimer(BaseClaimer):
             await self.page.get(URL_CLAIM)
             await self.sleep(4)
 
-            if await _is_logged_in():
-                break
-        else:
-            logger.warning("Failed to sign in after %d attempts – skipping.", max_attempts)
-            return
+            if await self._is_signed_in():
+                self.log_signed_in()
+                return
 
-        self.log_signed_in()
+        # Automated login didn't complete – ask the user to finish it via VNC.
+        logger.warning("Automated Prime login did not complete – requesting manual VNC login.")
+        custom_msg = self._vnc_notice(
+            "Prime Gaming / Amazon Luna — login needs you",
+            "Automated sign-in couldn't finish (passkey or extra verification). Open the browser and finish signing in.",
+        )
+        if await self._wait_for_vnc_login(self._is_signed_in, custom_msg=custom_msg):
+            self.log_signed_in()
+            return
+        logger.warning("Prime login still not completed after VNC wait – skipping.")
 
     async def _do_login(self) -> None:
         """Fill in email + password on the Amazon login page."""
+        import json
         email = cfg.pg_email
         password = cfg.pg_password
+        
+        # --- Handle "Switch accounts" / Saved Profile Screen ---
+        # Amazon often skips the email input if the browser session remembers
+        # the user's previous login, presenting a "Switch accounts" selection.
+        await self.page.evaluate('''
+            (() => {
+                const targetEmail = (%s || '').toLowerCase().trim();
+                const bodyText = (document.body.innerText || '').toLowerCase();
+                const isSwitchScreen = bodyText.includes('switch accounts') || bodyText.includes('add account') || bodyText.includes('przełącz konto') || bodyText.includes('dodaj konto');
+                if (!isSwitchScreen) return;
+
+                const allEls = [...document.querySelectorAll('div, span, a, button, li, label')].filter(el => {
+                    const t = (el.innerText || el.textContent || '').trim();
+                    return t && el.tagName !== 'BODY' && el.tagName !== 'HTML' && !el.className.includes('header');
+                });
+                // Sort by length ascending to match the most specific (deepest) elements first
+                allEls.sort((a, b) => (a.innerText || '').length - (b.innerText || '').length);
+
+                // 1. Try to click existing profile whose text includes our target email
+                if (targetEmail) {
+                    for (const el of allEls) {
+                        const t = (el.innerText || el.textContent || '').toLowerCase();
+                        if (t.includes(targetEmail)) {
+                            const clickable = el.closest('a, button, [role="button"], [role="link"], li, [class*="profile"], [class*="switcher"], [class*="account"], [class*="item"]') || el;
+                            clickable.click();
+                            return;
+                        }
+                    }
+                }
+
+                // 2. If target profile not found or email empty, click "Add account" / "Use another account"
+                const addKeywords = ['add account', 'use another account', 'dodaj konto', 'użyj innego konta', 'another account', 'innego konta'];
+                for (const el of allEls) {
+                    const t = (el.innerText || el.textContent || '').toLowerCase();
+                    if (addKeywords.some(kw => t.includes(kw))) {
+                        const clickable = el.closest('a, button, [role="button"], [role="link"], li, [class*="add"], [class*="account"], [class*="item"]') || el;
+                        clickable.click();
+                        return;
+                    }
+                }
+            })()
+        ''' % json.dumps(email))
+        await self.sleep(2)
 
         # Email field
         email_input = await self.page.find("#ap_email", timeout=10)
@@ -276,11 +410,19 @@ class PrimeGamingClaimer(BaseClaimer):
         if password_input:
             await password_input.apply('(el) => { let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set; if(setter) setter.call(el, ""); el.dispatchEvent(new Event("input", {bubbles: true})); }')
             await password_input.send_keys(password)
+            await self.sleep(1)
+            # Send Enter key directly to submit form natively (most stealthy anti-bot approach)
+            await password_input.send_keys("\r")
+            await self.sleep(3)
 
-        submit_btn = await self.page.find("#signInSubmit", timeout=5)
-        if submit_btn:
-            await submit_btn.click()
-            await self.sleep(4)
+        # Fallback check: if form did not submit via Enter and #signInSubmit is still present, click ONLY #signInSubmit
+        try:
+            submit_btn = await self.page.find("#signInSubmit", timeout=2)
+            if submit_btn:
+                await submit_btn.click()
+        except Exception:
+            pass
+        await self.sleep(4)
 
         # Handle MFA (TOTP authenticator app)
         if cfg.pg_otpkey:
@@ -337,11 +479,9 @@ class PrimeGamingClaimer(BaseClaimer):
         if not is_security_page:
             return
 
-        logger.warning("⚠️ Amazon security code verification required! "
-                       "Enter the code via VNC (noVNC web interface).")
+        logger.warning("⚠️ Amazon security code verification required! Open %s to enter the code via VNC.", cfg.vnc_url)
 
-        # _wait_for_vnc_login already sends a clean notification with the
-        # correct localhost URL, so we don't send a separate one here.
+        # _wait_for_vnc_login below sends the unified VNC notification.
 
         # Wait for the user to enter the code and the page to move on.
         # Uses the same timeout as VNC manual login (VNC_LOGIN_TIMEOUT).
@@ -358,9 +498,10 @@ class PrimeGamingClaimer(BaseClaimer):
                 'one time password' in body
             )
 
-        msg = (f"**{self.store_name}** requires Amazon SMS/2FA Verification! "
-               f"Open http://{cfg.vnc_ip}:{cfg.novnc_port or 7080} to enter the OTP code via VNC "
-               f"(waiting {cfg.vnc_login_timeout}s).")
+        msg = self._vnc_notice(
+            "Prime Gaming / Amazon — security code needed",
+            "Amazon needs a verification code (SMS / app / email). Open the browser and enter it.",
+        )
 
         resolved = await self._wait_for_vnc_login(_security_code_done, custom_msg=msg)
         if resolved:
@@ -719,6 +860,7 @@ class PrimeGamingClaimer(BaseClaimer):
 
         if cfg.dryrun:
             logger.info("DRYRUN – skipped '%s'.", title)
+            self.notify_games.append({"title": title, "url": url, "status": "available (dry run)"})
             return
             
         # Ensure session hasn't expired mid-loop before processing the card
@@ -782,6 +924,7 @@ class PrimeGamingClaimer(BaseClaimer):
 
         if cfg.dryrun:
             logger.info("DRYRUN – skipped external '%s'.", title)
+            self.notify_games.append({"title": title, "url": url, "status": f"available (dry run, {platform or 'external'})"})
             return
 
         # Ensure session hasn't expired mid-loop before processing the card
@@ -796,18 +939,8 @@ class PrimeGamingClaimer(BaseClaimer):
                 await self.page.get(full_detail_url)
                 await self.sleep(4)
 
-                # Check if session was lost after navigation (Amazon sometimes
-                # drops the auth when navigating to game detail pages)
-                is_signed_out = await self.page.evaluate("""
-                    (() => {
-                        const btns = Array.from(document.querySelectorAll('button, a'));
-                        return btns.some(b => {
-                            const t = (b.textContent || '').trim();
-                            return t === 'Sign in' || t === 'Try Prime';
-                        });
-                    })()
-                """)
-                if is_signed_out:
+                # Session sometimes drops when navigating to a detail page.
+                if not await self._is_signed_in():
                     logger.warning("Session lost on detail page for '%s' — attempting re-login…", title)
                     # Navigate back to claims page and re-authenticate
                     await self.page.get(URL_CLAIM)
