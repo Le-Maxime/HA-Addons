@@ -315,12 +315,10 @@ async def run_claimers() -> None:
             # Skip stores whose notifications are silenced (NOTIFY_SKIP_STORES).
             if not cfg.store_notify_enabled(_store_key(result.get("store", ""))):
                 continue
-            # Filter out games that were "existed" or "already redeemed", unless it's a dry run
+            # Include checked games (including existed/already claimed ones) for complete report
             relevant_games = [
                 g for g in result["games"]
                 if "status" in g 
-                and "exist" not in g["status"].lower() 
-                and "already" not in g["status"].lower()
                 and ("skip" not in g["status"].lower() or "dry run" in g["status"].lower())
             ]
             

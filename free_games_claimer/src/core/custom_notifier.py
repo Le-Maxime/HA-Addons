@@ -30,6 +30,8 @@ STORE_EMOJIS = {
 }
 
 STATUS_TRANSLATIONS = {
+    "failed:missing_base": "⚠️ Требуется базовая игра",
+    "missing_base": "⚠️ Требуется базовая игра",
     "already redeemed (gog)": "ℹ️ Уже в библиотеке",
     "already in your library": "ℹ️ Уже в библиотеке",
     "already in library": "ℹ️ Уже в библиотеке",
@@ -38,6 +40,7 @@ STATUS_TRANSLATIONS = {
     "already owned": "ℹ️ Уже в библиотеке",
     "in your library": "ℹ️ Уже в библиотеке",
     "in library": "ℹ️ Уже в библиотеке",
+    "existed": "ℹ️ Уже в библиотеке",
     "manual login required": "🔑 Требуется вход (VNC)",
     "manual login needed": "🔑 Требуется вход (VNC)",
     "claimed": "✅ Забрано",
@@ -125,16 +128,24 @@ def format_html_telegram(message: str, title: str | None = None) -> str:
     for line in lines:
         stripped = line.strip()
         if not stripped:
+            if formatted_lines and formatted_lines[-1] != "":
+                formatted_lines.append("")
             continue
 
         # Replace localhost with target_host in any URLs
         if "localhost" in stripped or "127.0.0.1" in stripped:
             stripped = re.sub(r'://(localhost|127\.0\.0\.1)', f'://{target_host}', stripped)
         
+        # Check for missing base game
+        if "missing_base" in stripped.lower():
+            stripped = re.sub(r'❌?\s*Ошибка получения:missing_base|failed:missing_base|missing_base', '⚠️ Требуется базовая игра', stripped, flags=re.IGNORECASE)
+            if "⚠️" not in stripped and "базовая игра" not in stripped:
+                stripped += " — ⚠️ Требуется базовая игра"
+
         # Check if line indicates already in library / owned
         is_already_owned = any(phrase in stripped.lower() for phrase in [
             "already in library", "already in your library", "already claimed", 
-            "already redeemed", "already owned", "in library", "in your library"
+            "already redeemed", "already owned", "in library", "in your library", "existed"
         ])
         
         # Translate statuses

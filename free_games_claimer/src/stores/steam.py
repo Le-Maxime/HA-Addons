@@ -470,7 +470,16 @@ class SteamClaimer(BaseClaimer):
 
         # Check if already owned
         owned_raw = await self.page.evaluate(
-            """JSON.stringify({ owned: document.querySelector('.game_area_already_owned') !== null })"""
+            """JSON.stringify((() => {
+                const body = (document.body ? document.body.innerText : '').toLowerCase();
+                const owned = document.querySelector('.game_area_already_owned, .ds_flag.ds_in_library, .ds_flag.ds_owned, .already_owned_flag, .in_library_flag') !== null ||
+                              body.includes('in your steam library') ||
+                              body.includes('is in your library') ||
+                              body.includes('already in your library') ||
+                              body.includes('уже в вашей библиотеке') ||
+                              body.includes('в вашей библиотеке');
+                return { owned };
+            })())"""
         )
         try:
             owned = json.loads(owned_raw) if isinstance(owned_raw, str) else {}
@@ -682,6 +691,26 @@ class SteamClaimer(BaseClaimer):
 
         method = claimed.get("method")
         if not method:
+            is_owned_fallback = await self.page.evaluate('''
+                (() => {
+                    const body = (document.body ? document.body.innerText : '').toLowerCase();
+                    if (document.querySelector('.game_area_already_owned, .ds_flag.ds_in_library, .ds_flag.ds_owned, .already_owned_flag, .in_library_flag') !== null) return true;
+                    if (body.includes('in your steam library') || body.includes('is in your library') || body.includes('already in your library') || body.includes('уже в вашей библиотеке') || body.includes('в вашей библиотеке')) return true;
+                    return false;
+                })()
+            ''')
+            if is_owned_fallback:
+                logger.info("'%s' is already in library.", page_title)
+                async with async_session() as session:
+                    obj, _ = await get_or_create(
+                        session, store="steam", user=self.user or "unknown",
+                        game_id=app_id, title=page_title, url=current_url, status="existed",
+                    )
+                    obj.status = "existed"
+                    await session.commit()
+                notify_game["status"] = "existed"
+                return
+
             logger.warning("No claim button found for '%s'.", page_title)
             notify_game["status"] = "failed"
             return
