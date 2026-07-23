@@ -7,7 +7,7 @@ Welcome! This is a personal repository of custom Home Assistant add-ons, designe
 | Add-on | Directory | Current Version | Original Upstream | Description |
 | :--- | :--- | :--- | :--- | :--- |
 | **Twitch Drops Miner** | [`twitch_drops_miner`](./twitch_drops_miner) | `v16.dev.8c55d85` | [DevilXD/TwitchDropsMiner](https://github.com/DevilXD/TwitchDropsMiner) | AFK Twitch drops mining with automated claiming and Ingress support. |
-| **Free Games Claimer Remaster** | [`free_games_claimer`](./free_games_claimer) | `v1.1.20260614-cca4992` | [P-Adamiec/Free-Games-Claimer-Remaster](https://github.com/P-Adamiec/Free-Games-Claimer-Remaster) | Automatic weekly/monthly free games claimer (Epic, Prime Gaming, GOG, Steam). |
+| **Free Games Claimer Remaster** | [`free_games_claimer`](./free_games_claimer) | `v1.1.20260721-3808055` | [P-Adamiec/Free-Games-Claimer-Remaster](https://github.com/P-Adamiec/Free-Games-Claimer-Remaster) | Automatic weekly/monthly free games claimer (Epic, Prime Gaming, GOG, Steam). |
 
 ---
 

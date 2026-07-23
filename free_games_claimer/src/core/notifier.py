@@ -103,7 +103,15 @@ async def notify(
     if cfg.discord_webhook:
         tasks.append(send_discord(message, screenshot_path=screenshot_path))
     if cfg.notify_url:
-        tasks.append(send_apprise(message, title=title))
+        try:
+            from src.core.custom_notifier import custom_notify
+            async def _send_custom():
+                handled = await custom_notify(message, screenshot_path=screenshot_path, title=title)
+                if not handled:
+                    await send_apprise(message, title=title)
+            tasks.append(_send_custom())
+        except Exception:
+            tasks.append(send_apprise(message, title=title))
 
     if not tasks:
         logger.debug("No notification service configured.")

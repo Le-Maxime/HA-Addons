@@ -9,6 +9,19 @@ config_path = os.path.join(script_dir, 'twitch_drops_miner', 'config.yaml')
 digest_path = os.path.join(script_dir, 'twitch_drops_miner', 'docker_digest.txt')
 readme_path = os.path.join(script_dir, 'twitch_drops_miner', 'README.md')
 changelog_path = os.path.join(script_dir, 'twitch_drops_miner', 'CHANGELOG.md')
+root_readme_path = os.path.join(script_dir, 'README.md')
+
+def update_root_readme_version(addon_folder, new_version):
+    if not os.path.exists(root_readme_path):
+        return
+    with open(root_readme_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    pattern = rf'(\| \*\*[^\*]+\*\* \| \[`{addon_folder}`\]\(\./{addon_folder}\) \| `)[^`]+(` \|)'
+    if re.search(pattern, content):
+        new_content = re.sub(pattern, rf'\g<1>{new_version}\g<2>', content)
+        with open(root_readme_path, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(new_content)
+        print(f"Updated root README.md version for {addon_folder} to {new_version}")
 
 def update_changelog(v_tag, t_version, c_path):
     """Получает описание релиза с GitHub и записывает/добавляет его в CHANGELOG.md"""
@@ -194,13 +207,42 @@ def update_twitch_drops_miner():
 
     # 6. Обновляем CHANGELOG.md
     update_changelog(version_tag, target_version, changelog_path)
+    update_root_readme_version('twitch_drops_miner', target_version)
 
 # Run the Twitch Drops Miner update
 update_twitch_drops_miner()
 
-# =============================================================================
-# FREE GAMES CLAIMER REMASTER UPDATE LOGIC
-# =============================================================================
+def patch_fgc_notifier(fgc_dir):
+    notifier_path = os.path.join(fgc_dir, 'src', 'core', 'notifier.py')
+    if not os.path.exists(notifier_path):
+        return
+
+    with open(notifier_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    if "from src.core.custom_notifier import custom_notify" in content:
+        print("Notifier is already patched with custom Telegram notifier.")
+        return
+
+    target = "if cfg.notify_url:\n        tasks.append(send_apprise(message, title=title))"
+    replacement = """if cfg.notify_url:
+        try:
+            from src.core.custom_notifier import custom_notify
+            async def _send_custom():
+                handled = await custom_notify(message, screenshot_path=screenshot_path, title=title)
+                if not handled:
+                    await send_apprise(message, title=title)
+            tasks.append(_send_custom())
+        except Exception:
+            tasks.append(send_apprise(message, title=title))"""
+
+    if target in content:
+        new_content = content.replace(target, replacement)
+        with open(notifier_path, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(new_content)
+        print("Successfully re-applied custom Telegram notifier hook to notifier.py.")
+    else:
+        print("Warning: Could not automatically patch notifier.py (target pattern missing).")
 
 def update_free_games_claimer():
     print("\n--- Checking for Free Games Claimer Remaster updates ---")
@@ -240,6 +282,9 @@ def update_free_games_claimer():
     
     if current_version == target_version:
         print("Free Games Claimer is up to date.")
+        # Ensure notifier is patched even if version matches
+        patch_fgc_notifier(fgc_dir)
+        update_root_readme_version('free_games_claimer', target_version)
         return
         
     print(f"Updating Free Games Claimer from {current_version} to {target_version}...")
@@ -280,12 +325,27 @@ def update_free_games_claimer():
             copy_file('.gitignore')
             copy_file('LICENSE')
             
-            # Copy src/ directory
+            # Copy src/ directory while preserving custom_notifier.py
             dest_src = os.path.join(fgc_dir, 'src')
+            custom_notifier_backup = None
+            custom_notifier_file = os.path.join(dest_src, 'core', 'custom_notifier.py')
+            if os.path.exists(custom_notifier_file):
+                with open(custom_notifier_file, 'r', encoding='utf-8') as f:
+                    custom_notifier_backup = f.read()
+
             if os.path.exists(dest_src):
                 shutil.rmtree(dest_src)
             shutil.copytree(os.path.join(extracted_folder, 'src'), dest_src)
             
+            if custom_notifier_backup:
+                os.makedirs(os.path.join(dest_src, 'core'), exist_ok=True)
+                with open(custom_notifier_file, 'w', encoding='utf-8', newline='\n') as f:
+                    f.write(custom_notifier_backup)
+                print("Preserved custom_notifier.py.")
+
+            # Apply custom notifier patch to notifier.py
+            patch_fgc_notifier(fgc_dir)
+
             # Clean up temp dir
             shutil.rmtree(temp_dir)
             print("Successfully copied source files.")
