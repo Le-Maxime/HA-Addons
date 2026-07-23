@@ -30,11 +30,19 @@ STORE_EMOJIS = {
 }
 
 STATUS_TRANSLATIONS = {
-    "claimed": "✅ Забрано",
+    "already redeemed (gog)": "ℹ️ Уже в библиотеке",
+    "already in your library": "ℹ️ Уже в библиотеке",
+    "already in library": "ℹ️ Уже в библиотеке",
     "already claimed": "ℹ️ Уже в библиотеке",
+    "already redeemed": "ℹ️ Уже в библиотеке",
+    "already owned": "ℹ️ Уже в библиотеке",
+    "in your library": "ℹ️ Уже в библиотеке",
+    "in library": "ℹ️ Уже в библиотеке",
+    "manual login required": "🔑 Требуется вход (VNC)",
+    "manual login needed": "🔑 Требуется вход (VNC)",
+    "claimed": "✅ Забрано",
     "failed": "❌ Ошибка получения",
     "skipped": "⏭ Пропущено",
-    "manual login needed": "🔑 Требуется вход (VNC)",
 }
 
 def parse_tgram_url(url: str) -> tuple[str, str] | None:
@@ -123,10 +131,19 @@ def format_html_telegram(message: str, title: str | None = None) -> str:
         if "localhost" in stripped or "127.0.0.1" in stripped:
             stripped = re.sub(r'://(localhost|127\.0\.0\.1)', f'://{target_host}', stripped)
         
+        # Check if line indicates already in library / owned
+        is_already_owned = any(phrase in stripped.lower() for phrase in [
+            "already in library", "already in your library", "already claimed", 
+            "already redeemed", "already owned", "in library", "in your library"
+        ])
+        
         # Translate statuses
         for eng, ru in STATUS_TRANSLATIONS.items():
             if eng in stripped.lower():
                 stripped = re.sub(re.escape(eng), ru, stripped, flags=re.IGNORECASE)
+
+        if is_already_owned:
+            stripped = stripped.replace("❌ Ошибка получения", "ℹ️ Уже в библиотеке").replace("❌", "ℹ️")
 
         # Translate store titles
         for store_key, store_label in STORE_EMOJIS.items():
