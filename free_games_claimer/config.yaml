@@ -17,6 +17,7 @@ options:
   height: 720
   scheduler_hours: 12
   vnc_password: ""
+  vnc_ip: ""
   stores: "steam,epic,prime,gog"
   discord_webhook: ""
   notify: ""
@@ -64,6 +65,7 @@ schema:
   height: int
   scheduler_hours: int
   vnc_password: password?
+  vnc_ip: str?
   stores: str?
   discord_webhook: str?
   notify: str?

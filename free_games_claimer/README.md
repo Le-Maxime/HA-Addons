@@ -22,6 +22,7 @@ Configure these parameters in the **Configuration** tab of the addon in the Home
 *   `width`: Width of the virtual VNC screen (default: `1280`).
 *   `height`: Height of the virtual VNC screen (default: `720`).
 *   `vnc_password`: Set password for VNC access (leave empty for none).
+*   `vnc_ip`: IP address or hostname of your Home Assistant server (e.g. `192.168.1.6`) for VNC links in Telegram.
 
 ### ⏰ Scheduler
 *   `scheduler_hours`: Time interval in hours between automated check and claim runs (default: `12`).

@@ -1,12 +1,13 @@
 """Custom Telegram Notifier for Free Games Claimer Remaster.
 
 Provides clean, beautifully formatted Russian notifications with HTML support,
-store icons, status badges, and photo attachments via Telegram Bot API.
+store icons, status badges, VNC IP customization, and photo attachments.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 import httpx
@@ -33,7 +34,7 @@ STATUS_TRANSLATIONS = {
     "already claimed": "ℹ️ Уже в библиотеке",
     "failed": "❌ Ошибка получения",
     "skipped": "⏭ Пропущено",
-    "manual login required": "🔑 Требуется вход (VNC)",
+    "manual login needed": "🔑 Требуется вход (VNC)",
 }
 
 def parse_tgram_url(url: str) -> tuple[str, str] | None:
@@ -50,8 +51,62 @@ def parse_tgram_url(url: str) -> tuple[str, str] | None:
         return token, chat_id
     return None
 
+def get_vnc_host() -> str:
+    """Determine the host/IP to use for VNC links."""
+    # 1. Custom VNC_IP from addon options / config
+    vnc_ip = (getattr(cfg, "vnc_ip", "") or "").strip()
+    if vnc_ip and vnc_ip.lower() != "localhost":
+        return vnc_ip
+    
+    # 2. Check environment variable VNC_IP / HA_HOST
+    env_vnc = os.getenv("VNC_IP") or os.getenv("HA_HOST")
+    if env_vnc and env_vnc.lower() != "localhost":
+        return env_vnc
+        
+    return "192.168.1.6"
+
+def format_vnc_login_request(message: str) -> str:
+    """Format VNC login request into a clean Russian Telegram HTML message."""
+    target_host = get_vnc_host()
+    
+    # Extract store name
+    store_name = "магазине"
+    for store_key, store_label in STORE_EMOJIS.items():
+        if store_key in message.lower():
+            store_name = store_label
+            break
+
+    # Extract or fix VNC URL
+    vnc_url_match = re.search(r'https?://[^\s]+', message)
+    if vnc_url_match:
+        vnc_url = vnc_url_match.group(0)
+        # Replace localhost/127.0.0.1 with target_host
+        vnc_url = re.sub(r'://(localhost|127\.0\.0\.1)', f'://{target_host}', vnc_url)
+    else:
+        vnc_url = f"http://{target_host}:7080/?autoconnect=true"
+
+    # Extract timeout
+    timeout_match = re.search(r'(\d+)\s*s', message)
+    timeout_str = f"{timeout_match.group(1)} сек." if timeout_match else "180 сек."
+
+    formatted = (
+        f"🔑 <b>ТРЕБУЕТСЯ ВХОД (VNC)</b>\n\n"
+        f"🛒 <b>Магазин:</b> {store_name}\n"
+        f"⚠️ Пожалуйста, завершите вход в аккаунт или введите 2FA-код.\n\n"
+        f"🌐 <b>Ссылка для входа:</b>\n"
+        f'<a href="{vnc_url}"><b>👉 Открыть VNC в браузере 👈</b></a>\n\n'
+        f"⏱ <b>Время ожидания:</b> {timeout_str}"
+    )
+    return formatted
+
 def format_html_telegram(message: str, title: str | None = None) -> str:
     """Format standard claimer text into rich Telegram HTML."""
+    target_host = get_vnc_host()
+
+    # Check if this is a VNC login request
+    if "manual login" in message.lower() or "open vnc" in message.lower() or "finish signing in" in message.lower():
+        return format_vnc_login_request(message)
+
     lines = message.split("\n")
     formatted_lines = []
 
@@ -63,6 +118,10 @@ def format_html_telegram(message: str, title: str | None = None) -> str:
         stripped = line.strip()
         if not stripped:
             continue
+
+        # Replace localhost with target_host in any URLs
+        if "localhost" in stripped or "127.0.0.1" in stripped:
+            stripped = re.sub(r'://(localhost|127\.0\.0\.1)', f'://{target_host}', stripped)
         
         # Translate statuses
         for eng, ru in STATUS_TRANSLATIONS.items():
