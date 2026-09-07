@@ -15,6 +15,21 @@
 
 
 
+
+## v16.dev.80ad0d9
+
+Updated Twitch Drops Miner to v16.dev.80ad0d9
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/80ad0d95c496573de0ac304fbe2deedc5f4c7c72
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@825bde3afd961a449027c6c0e757bbd147bc6259: Handle "request cancelled" GQL error
+- fireph/TwitchDropsMiner@0e4bc437cc6e8f18b1c44b8143c7d251b42d1dab: Update Campaigns GQL hash
+- fireph/TwitchDropsMiner@80ad0d95c496573de0ac304fbe2deedc5f4c7c72: Merge remote-tracking branch 'upstream/master' into webui
+
 ## v16.dev.ca05c8c
 
 Updated Twitch Drops Miner to v16.dev.ca05c8c
@@ -234,6 +249,21 @@ Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
 
 
 
+
+
+## v16.dev.80ad0d9
+
+Updated Twitch Drops Miner to v16.dev.80ad0d9
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/80ad0d95c496573de0ac304fbe2deedc5f4c7c72
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@825bde3afd961a449027c6c0e757bbd147bc6259: Handle "request cancelled" GQL error
+- fireph/TwitchDropsMiner@0e4bc437cc6e8f18b1c44b8143c7d251b42d1dab: Update Campaigns GQL hash
+- fireph/TwitchDropsMiner@80ad0d95c496573de0ac304fbe2deedc5f4c7c72: Merge remote-tracking branch 'upstream/master' into webui
 
 ## v16.dev.ca05c8c
 
