@@ -4,6 +4,11 @@
 
 
 
+
+## v1.1.20260911-b9ef573
+
+Upstream update: v1.9: Unify 2FA, GamerPower feeds the stores, stop waiting for nobody
+
 ## v1.1.20260905-8b96d61
 
 Upstream update: v1.8: Verify Epic claims, fix browser start, warn on unknown settings
