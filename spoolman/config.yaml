@@ -1,6 +1,6 @@
 name: "Spoolman"
-description: "Keep track of your 3D printer filament spools (v0.26.1)"
-version: "0.26.1"
+description: "Keep track of your 3D printer filament spools (v0.27.0)"
+version: "0.27.0"
 slug: "spoolman"
 url: "https://github.com/Donkie/Spoolman"
 arch:

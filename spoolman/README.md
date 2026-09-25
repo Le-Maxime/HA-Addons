@@ -1,6 +1,6 @@
 # Spoolman Home Assistant Add-on
 
-[![Spoolman Version](https://img.shields.io/badge/Spoolman-v0.26.1-blue.svg)](https://github.com/Donkie/Spoolman)
+[![Spoolman Version](https://img.shields.io/badge/Spoolman-v0.27.0-blue.svg)](https://github.com/Donkie/Spoolman)
 
 Keep track of your 3D printer filament spools directly within Home Assistant.
 
