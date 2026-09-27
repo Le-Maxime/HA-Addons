@@ -16,6 +16,21 @@
 
 
 
+
+## v16.dev.c8a9bac
+
+Updated Twitch Drops Miner to v16.dev.c8a9bac
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/c8a9bac43001d619e8bc3eaabd6e77676bafeb2e
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@d21c0d28607a71991facff0678557cc1f9eae5f8: User agent update
+- fireph/TwitchDropsMiner@22d0c6134f9291d1e904012c465504a22bd3f97c: Remove minor trailing whitespace
+- fireph/TwitchDropsMiner@c8a9bac43001d619e8bc3eaabd6e77676bafeb2e: Merge remote-tracking branch 'upstream/master' into webui
+
 ## v16.dev.80ad0d9
 
 Updated Twitch Drops Miner to v16.dev.80ad0d9
@@ -250,6 +265,21 @@ Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
 
 
 
+
+
+## v16.dev.c8a9bac
+
+Updated Twitch Drops Miner to v16.dev.c8a9bac
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/c8a9bac43001d619e8bc3eaabd6e77676bafeb2e
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@d21c0d28607a71991facff0678557cc1f9eae5f8: User agent update
+- fireph/TwitchDropsMiner@22d0c6134f9291d1e904012c465504a22bd3f97c: Remove minor trailing whitespace
+- fireph/TwitchDropsMiner@c8a9bac43001d619e8bc3eaabd6e77676bafeb2e: Merge remote-tracking branch 'upstream/master' into webui
 
 ## v16.dev.80ad0d9
 
