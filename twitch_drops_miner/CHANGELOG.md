@@ -17,6 +17,19 @@
 
 
 
+
+## v16.dev.8cf46c2
+
+Updated Twitch Drops Miner to v16.dev.8cf46c2
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/8cf46c2fe71b3fa13823c90375dd511e88782664
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@8cf46c2fe71b3fa13823c90375dd511e88782664: update readme
+
 ## v16.dev.c8a9bac
 
 Updated Twitch Drops Miner to v16.dev.c8a9bac
@@ -266,6 +279,19 @@ Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
 
 
 
+
+
+## v16.dev.8cf46c2
+
+Updated Twitch Drops Miner to v16.dev.8cf46c2
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/8cf46c2fe71b3fa13823c90375dd511e88782664
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@8cf46c2fe71b3fa13823c90375dd511e88782664: update readme
 
 ## v16.dev.c8a9bac
 
