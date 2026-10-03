@@ -18,6 +18,19 @@
 
 
 
+
+## v16.dev.4114227
+
+Updated Twitch Drops Miner to v16.dev.4114227
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/411422711d83a26d1dc49e2c6b5b2e051f69c145
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@411422711d83a26d1dc49e2c6b5b2e051f69c145: wait for browser to start (up to 15 seconds)
+
 ## v16.dev.8cf46c2
 
 Updated Twitch Drops Miner to v16.dev.8cf46c2
@@ -280,6 +293,19 @@ Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
 
 
 
+
+
+## v16.dev.4114227
+
+Updated Twitch Drops Miner to v16.dev.4114227
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/411422711d83a26d1dc49e2c6b5b2e051f69c145
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@411422711d83a26d1dc49e2c6b5b2e051f69c145: wait for browser to start (up to 15 seconds)
 
 ## v16.dev.8cf46c2
 
