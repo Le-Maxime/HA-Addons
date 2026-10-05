@@ -132,9 +132,15 @@ def _slug(href: str) -> str:
 
 
 def _package_id(href: str) -> str:
-    """The number the entitlements API calls `productId`, tucked at the end of the asset URL."""
-    match = re.search(r"-(\d+)$", _slug(href))
+    """The number the entitlements API calls `productId`: `…/name-250947` or `…/package/id/250947`."""
+    match = re.search(r"(?:^|-)(\d+)$", _slug(href))
     return match.group(1) if match else ""
+
+
+def asset_name_from_title(title: str) -> str:
+    """The asset's own name from a tab title like `Name | 3D Landscapes | Unity Asset Store`."""
+    parts = [part.strip() for part in str(title or "").split(" | ")]
+    return parts[0] if len(parts) >= 2 and parts[-1] == "Unity Asset Store" else ""
 
 
 def parse_free_asset(state: dict) -> dict | None:
@@ -424,6 +430,15 @@ class UnityClaimer(BaseClaimer):
 
         state = await self._evaluate_json(self.PAGE_STATE_JS)
         logger.debug("Asset page: title=%r buttons=%r", state.get("title"), state.get("buttons"))
+
+        # The sale page's heading can lag a week behind its gift link, the asset page names what is sold.
+        named = asset_name_from_title(state.get("title"))
+        if named and named != title:
+            logger.debug("The sale page calls it %r, the asset page %r, going by the asset page.", title, named)
+            title = named
+
+        if not package_id:
+            logger.warning("No package number in '%s', so ownership cannot be checked.", url)
 
         if package_id and package_id in await self._owned_ids():
             logger.info("'%s' already in library.", title)

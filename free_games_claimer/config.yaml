@@ -1,6 +1,6 @@
 name: "Free Games Claimer Remaster"
 description: "Automatically claims free weekly/monthly games from Epic Games Store, Prime Gaming, GOG, and Steam."
-version: "v1.1.20260911-b9ef573"
+version: "v1.1.20261004-89f510e"
 slug: "free_games_claimer"
 init: false
 arch:

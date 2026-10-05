@@ -23,6 +23,77 @@ STEAMDB_FREE_URL = "https://steamdb.info/upcoming/free/"
 URL_STORE = "https://store.steampowered.com/?l=english"
 URL_LOGIN = "https://store.steampowered.com/login/"
 
+# A game's demo has its own purchase block and is always free, so it must never pass as the giveaway (#62).
+DEMO_JS = r"""
+    const isDemoBlock = el => !!el && (el.matches('.demo_above_purchase') || !!el.querySelector('.demo_above_purchase, #demoGameBtn'));
+    const isDemoBtn = el => !!el && (!!el.closest('.demo_above_purchase, #demoGameBtn') || /\bdemo\b|playtest/i.test(el.textContent || ''));
+"""
+
+# "Remember me" is a div with role="checkbox", ticked by default, so it is clicked only when off (#65).
+REMEMBER_ME_JS = r"""
+(() => {
+    const form = document.querySelector('div[data-featuretarget="login"]') || document;
+    const box = form.querySelector('[role="checkbox"]');
+    if (!box) return "not_found";
+    if (box.getAttribute('aria-checked') === 'true') return "already";
+    box.click();
+    return "clicked";
+})()
+"""
+# React applies the click a moment later, so the state is read again afterwards.
+REMEMBER_ME_STATE_JS = (
+    "(document.querySelector('div[data-featuretarget=\"login\"] [role=\"checkbox\"]')"
+    "?.getAttribute('aria-checked')) || 'missing'"
+)
+
+URL_REGISTER_KEY = "https://store.steampowered.com/account/registerkey?l=english"
+
+# Steam's answers on its key page; "not valid" was read live on 4.10, the rest is Steam's standard wording.
+ACTIVATION_RESULTS = (
+    ("too many recent activation attempts", "rate-limited"),
+    ("already owns", "owned"),
+    ("already been activated", "used"),
+    ("not valid", "invalid"),
+    ("requires ownership of another product", "needs-base"),
+    ("region", "region"),
+)
+
+# Each outcome as (database status, summary status); a key Steam did not take stays in the giver's library.
+KEY_OUTCOMES = {
+    "activated": ("claimed and activated", "activated on Steam ✅"),
+    "owned": ("existed", "existed"),
+    "used": ("failed:key-invalid", "failed:key-invalid"),
+    "invalid": ("failed:key-invalid", "failed:key-invalid"),
+    "needs-base": ("failed:missing_base", "failed:missing_base"),
+    "region": ("failed:key-region", "failed:key-region"),
+}
+
+ACTIVATION_STATE_JS = """JSON.stringify((() => {
+    const receipt = document.querySelector('#receipt_form');
+    return {
+        error: (document.querySelector('#error_display')?.innerText || '').trim(),
+        receipt: !!receipt && getComputedStyle(receipt).display !== 'none' && (receipt.innerText || '').trim().length > 0,
+    };
+})())"""
+
+
+def activation_outcome(error_text: str, receipt_shown: bool) -> str:
+    """What Steam did with a key: activated, owned, used, invalid, needs-base, region, rate-limited or unknown."""
+    if receipt_shown:
+        return "activated"
+    text = (error_text or "").lower()
+    return next((outcome for marker, outcome in ACTIVATION_RESULTS if marker in text), "unknown")
+
+
+def is_waiting_steam_key(status: str | None, code: str | None, extra: str | None) -> bool:
+    """A key another store left for Steam: still "claimed", with a code, tagged for Steam."""
+    if status != "claimed" or not code:
+        return False
+    try:
+        return json.loads(extra or "{}").get("external_store") == "steam"
+    except (json.JSONDecodeError, AttributeError):
+        return False
+
 
 class SteamClaimer(BaseClaimer):
     store_name = "steam"
@@ -75,6 +146,98 @@ class SteamClaimer(BaseClaimer):
             has_new = [g for g in self.notify_games if g["status"] == "claimed"]
             # We defer notification sending to main.py
             await self.close_browser()
+
+    # ------------------------------------------------------------------
+    # Keys other stores handed out (Fanatical giveaways)
+    # ------------------------------------------------------------------
+
+    async def redeem_pending_keys(self) -> None:
+        """Activate the Steam keys another store left in the database."""
+        from sqlalchemy import select
+
+        from src.core.database import ClaimedGame
+
+        async with async_session() as session:
+            rows = (await session.execute(
+                select(ClaimedGame).where(ClaimedGame.status == "claimed", ClaimedGame.code.isnot(None))
+            )).scalars().all()
+        waiting = [(r.id, r.title, r.code) for r in rows if is_waiting_steam_key(r.status, r.code, r.extra)]
+        if not waiting:
+            logger.debug("No Steam keys waiting to be activated.")
+            return
+
+        logger.info("Found %d Steam key(s) waiting to be activated. Starting browser...", len(waiting))
+        try:
+            await self.start_browser(force_headful=True, extra_args=["--ignore-gpu-blocklist", "--enable-unsafe-webgpu"])
+            await self.page.get(URL_STORE)
+            await self.sleep(3)
+            await self._ensure_logged_in(URL_STORE)
+            for row_id, title, key in waiting:
+                if not await self._activate_key(row_id, title, key):
+                    break
+        except Exception:
+            logger.exception("Fatal error during Steam key activation")
+        finally:
+            await self.close_browser()
+
+    async def _activate_key(self, row_id: int, title: str, key: str) -> bool:
+        """Enter one key on Steam's activation page. False when the rest should wait for the next run."""
+        from src.core.database import ClaimedGame
+
+        label = f"{title} (Fanatical key)"
+        if cfg.dryrun:
+            logger.info("DRYRUN – would activate the Steam key for '%s'.", title)
+            self.notify_games.append({"title": label, "url": URL_REGISTER_KEY, "status": "available (dry run)"})
+            return True
+
+        await self.page.get(URL_REGISTER_KEY)
+        await self.sleep(4)
+        field = await self.page.select("#product_key", timeout=10)
+        if not field:
+            logger.warning("Steam's key page showed no key field, '%s' stays queued for the next run.", title)
+            return False
+        await field.click()
+        await self.sleep(0.4)
+        await field.send_keys(key)
+        await self.sleep(0.5)
+        await self.page.evaluate("(() => { const b = document.querySelector('#accept_ssa'); if (b && !b.checked) b.click(); })()")
+        await self.sleep(0.5)
+        button = await self.page.select("#register_btn", timeout=5)
+        if not button:
+            logger.warning("Steam's key page showed no Continue button, '%s' stays queued.", title)
+            return False
+        await button.click()
+        await self.sleep(6)
+
+        try:
+            state = json.loads(await self.page.evaluate(ACTIVATION_STATE_JS))
+        except (json.JSONDecodeError, TypeError):
+            state = {}
+        outcome = activation_outcome(state.get("error", ""), bool(state.get("receipt")))
+        logger.debug("Steam key %s… for '%s': %s (%s)", key[:5], title, outcome, str(state.get("error", ""))[:120])
+
+        if outcome == "rate-limited":
+            logger.warning("Steam asks to wait before more key activations, '%s' stays queued for the next run.", title)
+            return False
+        if outcome == "unknown":
+            logger.warning("Could not read Steam's answer for '%s', the key stays queued for the next run.", title)
+            await self.take_screenshot(f"steam_key_{filenamify(title)}")
+            return False
+
+        db_status, shown = KEY_OUTCOMES[outcome]
+        if outcome == "activated":
+            logger.info("✓ Activated the Steam key for '%s'.", title)
+        elif outcome == "owned":
+            logger.info("'%s' is already on your Steam account, the key stays unused in your Fanatical library.", title)
+        else:
+            logger.warning("Steam did not take the key for '%s' (%s), it stays in your Fanatical library.", title, outcome)
+        async with async_session() as session:
+            row = await session.get(ClaimedGame, row_id)
+            if row:
+                row.status = db_status
+                await session.commit()
+        self.notify_games.append({"title": label, "url": URL_REGISTER_KEY, "status": shown})
+        return True
 
     # ------------------------------------------------------------------
 
@@ -317,18 +480,11 @@ class SteamClaimer(BaseClaimer):
 
         # --- Remember Me (keep session alive across restarts) ---
         try:
-            remember_checked = await self.page.evaluate('''
-                (() => {
-                    const cb = document.querySelector('input[type="checkbox"]');
-                    if (cb && !cb.checked) { cb.click(); return "clicked"; }
-                    if (cb && cb.checked) return "already";
-                    return "not_found";
-                })()
-            ''')
-            logger.debug("Remember Me checkbox: %s", remember_checked)
-        except Exception:
-            pass
-        await self.sleep(0.5)
+            remember = await self.page.evaluate(REMEMBER_ME_JS)
+            await self.sleep(0.5)
+            logger.debug("Remember me: %s, ticked now: %s", remember, await self.page.evaluate(REMEMBER_ME_STATE_JS))
+        except Exception as e:
+            logger.debug("Remember me could not be read: %s", e)
 
         # --- Submit ---
         submit = await self.page.find('div[data-featuretarget="login"] button[type="submit"]', timeout=5)
@@ -493,29 +649,33 @@ class SteamClaimer(BaseClaimer):
         # temporarily free to keep, those WILL have an "Add to Account" button.
         # Only skip if there's NO claim button at all.
         is_unclaimed_f2p = await self.page.evaluate('''
-            (() => {
+            (() => {''' + DEMO_JS + '''
                 // If there's any claim button or form, this IS claimable, don't skip
                 const freeBtn = document.querySelector('#freeGameBtn');
-                if (freeBtn) return false;
+                if (freeBtn && !isDemoBtn(freeBtn)) return false;
                 const addBtn = document.querySelector('[data-action="add_to_account"]');
-                if (addBtn) return false;
+                if (addBtn && !isDemoBtn(addBtn)) return false;
                 // Check for DLC/sublicense forms (language-agnostic)
                 const forms = document.querySelectorAll('.game_area_purchase_game form');
                 for (const form of forms) {
+                    if (isDemoBlock(form.closest('.game_area_purchase_game'))) continue;
                     if (form.querySelector('input[name="subid"]')) return false;
                 }
                 // Check for ANY green purchase button
-                const greenBtn = document.querySelector('.game_area_purchase_game .btn_green_steamui');
+                const greenBtn = [...document.querySelectorAll('.game_area_purchase_game .btn_green_steamui')]
+                    .find(b => !isDemoBtn(b));
                 if (greenBtn) return false;
                 // Check for any button with "Free" text that looks claimable
                 const allBtns = document.querySelectorAll('.game_area_purchase_game .btn_medium, .game_area_purchase_game a.btn_green_steamui');
                 for (const btn of allBtns) {
+                    if (isDemoBtn(btn)) continue;
                     const t = (btn.textContent || '').toLowerCase();
                     if (t.includes('free') || t.includes('install') || t.includes('add')) return false;
                 }
 
                 // No claim button found, check if it's just a F2P title
-                const purchaseArea = document.querySelector('.game_area_purchase_game');
+                const purchaseArea = [...document.querySelectorAll('.game_area_purchase_game')]
+                    .find(b => !isDemoBlock(b));
                 if (purchaseArea) {
                     const text = purchaseArea.textContent || '';
                     if (text.includes('Play Game')) return true;
@@ -539,15 +699,16 @@ class SteamClaimer(BaseClaimer):
         # ── SAFETY: Verify the item is genuinely FREE before attempting to claim ──
         # Some games have multiple purchase blocks (e.g. DLC with paid + free editions).
         # We MUST verify that the specific item we're about to claim costs 0.
-        price_check_raw = await self.page.evaluate('''
-            JSON.stringify((() => {
+        price_check_raw = await self.page.evaluate(r'''
+            JSON.stringify((() => {''' + DEMO_JS + r'''
                 // Check for any price indicator on the page
                 const purchaseBlocks = document.querySelectorAll('.game_area_purchase_game_wrapper, .game_area_purchase_game');
                 let hasFreeBlock = false;
                 let hasPaidBlock = false;
                 let paidPrice = '';
-                
+
                 for (const block of purchaseBlocks) {
+                    if (isDemoBlock(block)) continue;
                     const text = block.textContent || '';
                     // Check if this block is free (-100%, 0.00, 0,00, Free, Complimentary)
                     const isFree = text.includes('-100%') || 
@@ -581,7 +742,7 @@ class SteamClaimer(BaseClaimer):
                 
                 // Also check the global add_to_account button (outside purchase blocks)
                 const globalAdd = document.querySelector('[data-action="add_to_account"]');
-                if (globalAdd && !hasFreeBlock) {
+                if (globalAdd && !hasFreeBlock && !isDemoBtn(globalAdd)) {
                     // Standalone add_to_account button = free item (DLC page pattern)
                     hasFreeBlock = true;
                 }
@@ -614,11 +775,12 @@ class SteamClaimer(BaseClaimer):
         # We MUST check add_to_account and form-based claims BEFORE freeGameBtn.
         # SAFETY: Only claim from blocks verified to be free (-100% or 0.00 price).
         claimed_raw = await self.page.evaluate(
-            """
-            JSON.stringify((() => {
+            r"""
+            JSON.stringify((() => {""" + DEMO_JS + r"""
                 // Helper: check if a purchase block is genuinely free
                 function isFreeBlock(block) {
-                    const text = block ? block.textContent || '' : '';
+                    if (!block || isDemoBlock(block)) return false;
+                    const text = block.textContent || '';
                     return text.includes('-100%') || 
                            /\b0[.,]00\b/.test(text) ||
                            text.includes('Free to Keep') ||
@@ -628,7 +790,7 @@ class SteamClaimer(BaseClaimer):
 
                 // 1. Try data-action="add_to_account", but only in a free context
                 const addBtn = document.querySelector('[data-action="add_to_account"]');
-                if (addBtn) {
+                if (addBtn && !isDemoBtn(addBtn)) {
                     // Walk up to find the purchase block and verify it's free
                     let parent = addBtn.closest('.game_area_purchase_game_wrapper') ||
                                  addBtn.closest('.game_area_purchase_game');
@@ -660,7 +822,7 @@ class SteamClaimer(BaseClaimer):
 
                 // 3. Try #freeGameBtn ONLY if it's in a free context
                 const freeBtn = document.querySelector('#freeGameBtn');
-                if (freeBtn) {
+                if (freeBtn && !isDemoBtn(freeBtn)) {
                     let parent = freeBtn.closest('.game_area_purchase_game_wrapper') ||
                                  freeBtn.closest('.game_area_purchase_game');
                     if (!parent || isFreeBlock(parent)) {
@@ -779,18 +941,18 @@ class SteamClaimer(BaseClaimer):
         # For Free-to-Play games, clicking "Play Game" adds it to the library.
         # For Free-to-Keep games, clicking "Add to Account" does it.
         add_raw = await self.page.evaluate('''
-            JSON.stringify((() => {
+            JSON.stringify((() => {''' + DEMO_JS + '''
                 // Try "Add to Library" (Blue button, new Steam UI)
-                const allBtns = [...document.querySelectorAll('.btn_medium')];
+                const allBtns = [...document.querySelectorAll('.btn_medium')].filter(b => !isDemoBtn(b));
                 const addLibBtn = allBtns.find(b => b.textContent.includes('Add to Library') || b.textContent.includes('Dodaj do biblioteki'));
                 if (addLibBtn) { addLibBtn.click(); return { success: true, method: 'add_to_library' }; }
-                
+
                 // Try Add to Account first (Free to keep)
                 const addBtn = document.querySelector('[data-action="add_to_account"]');
-                if (addBtn) { addBtn.click(); return { success: true, method: 'add_to_account' }; }
-                
+                if (addBtn && !isDemoBtn(addBtn)) { addBtn.click(); return { success: true, method: 'add_to_account' }; }
+
                 // Try Play Game (Free to Play)
-                const greenBtns = [...document.querySelectorAll('.btn_green_steamui.btn_medium')];
+                const greenBtns = [...document.querySelectorAll('.btn_green_steamui.btn_medium')].filter(b => !isDemoBtn(b));
                 const playBtn = greenBtns.find(b => b.textContent.includes('Play Game') || b.textContent.includes('Zagraj'));
                 if (playBtn) { playBtn.click(); return { success: true, method: 'play_game' }; }
                 

@@ -1526,9 +1526,7 @@ class AliExpressClaimer(BaseClaimer):
         # Read the coin/check-in API captured in-page (balance + diagnostic fields).
         await self._read_coin_api()
 
-        # AliExpress has been answering browsers with a coin page that ships its scripts
-        # and then renders nothing. One fresh approach covers a page that merely stalled,
-        # anything beyond that is half an hour spent on a page that will not come back.
+        # The coin page often renders nothing; it flips fast, so a few fresh approaches beat long waits.
         health = await self._page_health()
         for attempt in range(1, max(0, cfg.ae_page_retries) + 1):
             if not page_is_dead(health):
@@ -1548,7 +1546,7 @@ class AliExpressClaimer(BaseClaimer):
                 "Collect in the mobile app if it keeps happening.",
                 health.get("innerTextLen"), health.get("textContentLen"))
             await self._dump_failure_state()
-            self._report("coin page did not render this run")
+            self._report("failed, the coin page did not render 🚫")
             return
 
         if cfg.dryrun:
@@ -1658,14 +1656,8 @@ class AliExpressClaimer(BaseClaimer):
             self.logger.error(
                 "🚫 Session flagged as low-trust: only %s coin(s) offered instead of the "
                 "full amount, NOT collecting (policy). Collect on your phone to keep the streak.", coins)
-            self._report(f"⚠️ flagged, only {coins} coin(s) offered, not collected 🚫")
-            if cfg.notify_claim_fails:
-                await self.notify(
-                    f"⚠️ **AliExpress check-in flagged**\n\n"
-                    f"The bot's session is being risk-scored: only **{coins} coin(s)** were "
-                    f"offered instead of the full amount, so it did NOT collect.\n"
-                    f"👉 **Collect on your phone / the AliExpress app today** to keep your streak. "
-                    f"The bot will try again on the next scheduled run.")
+            # "failed" lets NOTIFY_CLAIM_FAILS decide, the summary is the one message about it.
+            self._report(f"failed, only {coins} coin(s) offered (bot flag), collect in the app today 🚫")
             return
 
         # No button the bot can read, so hand over via VNC: the page is there,
@@ -1689,7 +1681,7 @@ class AliExpressClaimer(BaseClaimer):
             self._report(status.replace("claimed", "claimed manually via VNC", 1))
         else:
             self.logger.error("⚠️ Still not collected after VNC wait, streak may break.")
-            self._report("⚠️ NOT collected, widget did not render")
+            self._report("failed, no check-in button found 🚫")
 
 
 async def claim_aliexpress() -> dict:

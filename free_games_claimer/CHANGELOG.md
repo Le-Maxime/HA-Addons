@@ -5,6 +5,11 @@
 
 
 
+
+## v1.1.20261004-89f510e
+
+Upstream update: v1.11: PUID/PGID, IndieGala sign-in, Fanatical keys activated on Steam, Fab opt-in, Epic checkout captcha, failed claims in the summary, VNC password and store fixes
+
 ## v1.1.20260911-b9ef573
 
 Upstream update: v1.9: Unify 2FA, GamerPower feeds the stores, stop waiting for nobody

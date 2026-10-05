@@ -6,8 +6,8 @@ Welcome! This is a personal repository of custom Home Assistant add-ons, designe
 
 | Add-on | Directory | Current Version | Original Upstream | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| **Twitch Drops Miner** | [`twitch_drops_miner`](./twitch_drops_miner) | `v16.dev.4114227` | [DevilXD/TwitchDropsMiner](https://github.com/DevilXD/TwitchDropsMiner) | AFK Twitch drops mining with automated claiming and Ingress support. |
-| **Free Games Claimer Remaster** | [`free_games_claimer`](./free_games_claimer) | `v1.1.20260911-b9ef573` | [P-Adamiec/Free-Games-Claimer-Remaster](https://github.com/P-Adamiec/Free-Games-Claimer-Remaster) | Automatic weekly/monthly free games claimer (Epic, Prime Gaming, GOG, Steam). |
+| **Twitch Drops Miner** | [`twitch_drops_miner`](./twitch_drops_miner) | `v16.dev.1070607` | [DevilXD/TwitchDropsMiner](https://github.com/DevilXD/TwitchDropsMiner) | AFK Twitch drops mining with automated claiming and Ingress support. |
+| **Free Games Claimer Remaster** | [`free_games_claimer`](./free_games_claimer) | `v1.1.20261004-89f510e` | [P-Adamiec/Free-Games-Claimer-Remaster](https://github.com/P-Adamiec/Free-Games-Claimer-Remaster) | Automatic weekly/monthly free games claimer (Epic, Prime Gaming, GOG, Steam). |
 | **Spoolman** | [`spoolman`](./spoolman) | `0.27.0` | [Donkie/Spoolman](https://github.com/Donkie/Spoolman) | Keep track of your 3D printer filament spools with persistent DB storage. |
 
 ---

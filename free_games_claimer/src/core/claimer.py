@@ -21,6 +21,7 @@ The stealth JavaScript patches (injected before any page loads) spoof:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from pathlib import Path
@@ -30,6 +31,14 @@ import nodriver as uc
 import pyotp
 
 from src.core.config import cfg
+from src.core.display import (
+    free_memory,
+    restart_screen,
+    running_as,
+    screen_is_alive,
+    screen_is_managed,
+    screen_state,
+)
 from src.core.run_state import mark_answered, mark_unanswered, waits_for_nobody
 
 logger = logging.getLogger("fgc.claimer")
@@ -80,6 +89,40 @@ def filenamify(s: str) -> str:
 
 # Two goes with the authenticator secret, then a recovery code if there is one, then you over VNC.
 OTP_KEY_ATTEMPTS = 2
+
+# A human check in whatever document it runs in: the page itself, or a checkout frame inside it.
+CHALLENGE_JS = r"""
+(() => {
+    const t = (document.title || '').toLowerCase();
+    if (t.includes('just a moment') || t.includes('attention required') || t.includes('one more step')) return true;
+    if (document.querySelector('#challenge-form, #challenge-running, #cf-challenge-running')) return true;
+    // Only a widget you could actually click counts. Epic keeps a full size hCaptcha
+    // frame on every sign-in page, hidden by style, until it is really needed.
+    const seen = el => {
+        const r = el.getBoundingClientRect();
+        if (r.width < 60 || r.height < 40) return false;
+        for (let n = el; n; n = n.parentElement) {
+            const st = getComputedStyle(n);
+            if (st.visibility === 'hidden' || st.display === 'none' || parseFloat(st.opacity) < 0.1) return false;
+        }
+        const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+        if (cx < 0 || cy < 0 || cx > innerWidth || cy > innerHeight) return false;
+        const at = document.elementFromPoint(cx, cy);
+        return !!at && (at === el || el.contains(at) || at.contains(el));
+    };
+    // reCAPTCHA's picture challenge is the bframe; an invisible reCAPTCHA's anchor is only its corner badge.
+    const rx = /hcaptcha|arkoselabs|funcaptcha|arkose|px-captcha|geetest|turnstile|recaptcha\/(api2|enterprise)\/(anchor|bframe)|datadome|captcha-delivery/i;
+    const badge = f => /recaptcha\/(api2|enterprise)\/anchor/i.test(f.getAttribute('src') || '') && /[?&]size=invisible/i.test(f.getAttribute('src') || '');
+    const frames = [...document.querySelectorAll('iframe')];
+    if (frames.some(f => rx.test((f.getAttribute('src') || '') + ' ' + (f.getAttribute('title') || '')) && !badge(f) && seen(f))) return true;
+    const widgets = [...document.querySelectorAll('.cf-turnstile, #h_captcha, #talon_frame_login_prod, #FunCaptcha, [id*="arkose" i], #datadome')];
+    if (widgets.some(seen)) return true;
+    const b = (document.body ? (document.body.innerText || '') : '').toLowerCase();
+    if (b.includes('verify you are human') || b.includes('checking your browser') || b.includes('complete a security check') || b.includes('needs to review the security of your connection')) return true;
+    if (b.includes("check that you're a real person") || b.includes('check that you are a real person') || b.includes('geo.captcha-delivery.com')) return true;
+    return false;
+})()
+"""
 
 
 class BaseClaimer:
@@ -253,6 +296,9 @@ class BaseClaimer:
         except Exception as e:
             self.logger.debug("Failed to seed Chrome preferences: %s", e)
 
+        # Close a browser left over from an earlier run first, or it and the new one write the same
+        # profile at once (issue #38). Locks come off after that, when nothing holds them any more.
+        self._sweep_orphan_chrome(store_browser_dir)
         # Remove stale singleton lock files that a crashed instance leaves behind (session data untouched).
         self._clear_profile_locks(store_browser_dir)
 
@@ -304,6 +350,15 @@ class BaseClaimer:
         if extra_args:
             args.extend(extra_args)
 
+        # A window needs the virtual screen, and once that died every attempt below fails the same
+        # way while noVNC goes quiet too (issue #52), so deal with it here instead of retrying into it.
+        if not headless and screen_is_managed() and not screen_is_alive():
+            if not restart_screen():
+                raise RuntimeError(
+                    f"The virtual screen is gone and would not start again ({screen_state()}). "
+                    "TurboVNC.log in your data folder says why, and a container restart is the usual cure."
+                )
+
         # Launch with retries; sweep orphaned Chrome + locks between attempts (issue #19).
         launch_error: Exception | None = None
         for attempt in range(1, 4):
@@ -324,6 +379,10 @@ class BaseClaimer:
             except Exception as e:
                 launch_error = e
                 self.logger.warning("Chrome launch attempt %d/3 failed: %s", attempt, e)
+                if attempt == 1:
+                    # Cheap facts only, so a run that recovers on a later attempt still leaves evidence.
+                    self.logger.debug("State at the first failure: screen %s | user %s | memory %s",
+                                      screen_state(), running_as(), free_memory())
                 await self.close_browser()
                 self._sweep_orphan_chrome(store_browser_dir)
                 self._clear_profile_locks(store_browser_dir)
@@ -381,6 +440,13 @@ class BaseClaimer:
         """Close the browser and kill its whole process tree (issue #19)."""
         if not self.browser:
             return
+        # A clean close lets Chrome write its cookies to disk before the process tree is killed.
+        if self.page:
+            try:
+                await self.page.send(uc.cdp.browser.close())
+                await asyncio.sleep(1)
+            except Exception as e:
+                self.logger.debug("Clean browser close failed, killing it instead: %s", e)
         pid = getattr(self.browser, "_process_pid", None) \
             or getattr(getattr(self.browser, "_process", None), "pid", None)
         try:
@@ -433,9 +499,10 @@ class BaseClaimer:
 
         self.logger.warning(
             "Chrome would not start. binary=%s (%s) | profile=%s exists=%s writable=%s | disk %s | "
-            "started by hand: %s",
+            "memory %s | user %s | screen %s | started by hand: %s",
             chrome_path or "auto", version, profile_dir, profile_dir.exists(),
-            profile_dir.exists() and os.access(profile_dir, os.W_OK), free, startup,
+            profile_dir.exists() and os.access(profile_dir, os.W_OK), free,
+            free_memory(), running_as(), screen_state(), startup,
         )
 
     def _clear_profile_locks(self, store_browser_dir: Path) -> None:
@@ -500,6 +567,85 @@ class BaseClaimer:
         return killed
 
     # ------------------------------------------------------------------
+    # Cross-origin frames (a page cannot read into one, CDP can)
+    # ------------------------------------------------------------------
+
+    def _walk_nodes(self, node):
+        """Every node of a pierced DOM tree, iframe documents included."""
+        yield node
+        for child in (node.children or []):
+            yield from self._walk_nodes(child)
+        content = getattr(node, "content_document", None)
+        if content is not None:
+            yield from self._walk_nodes(content)
+
+    @staticmethod
+    def _node_attrs(node) -> dict:
+        """An element's attributes as a dict, CDP hands them over as a flat list."""
+        raw = node.attributes or []
+        return {raw[i]: raw[i + 1] for i in range(0, len(raw) - 1, 2)}
+
+    async def _pierced_document(self):
+        """The whole page as one tree, the documents of other-origin frames included."""
+        try:
+            return await self.page.send(uc.cdp.dom.get_document(depth=-1, pierce=True))
+        except Exception as exc:
+            self.logger.debug("Could not read the pierced DOM: %s", exc)
+            return None
+
+    async def _frame_document(self, matches):
+        """The document of the first iframe whose attributes `matches` accepts."""
+        doc = await self._pierced_document()
+        if doc is None:
+            return None
+        for node in self._walk_nodes(doc):
+            if node.node_name == "IFRAME" and matches(self._node_attrs(node)):
+                return getattr(node, "content_document", None)
+        return None
+
+    async def _frame_eval(self, document, function_declaration: str):
+        """Run JS inside a frame document and parse what it hands back."""
+        try:
+            handle = await self.page.send(uc.cdp.dom.resolve_node(node_id=document.node_id))
+            result = await self.page.send(uc.cdp.runtime.call_function_on(
+                function_declaration=function_declaration,
+                object_id=handle.object_id,
+                return_by_value=True,
+            ))
+            if isinstance(result, tuple):
+                result = result[0]
+            raw = getattr(result, "value", None)
+            return json.loads(raw) if isinstance(raw, str) else raw
+        except Exception as exc:
+            self.logger.debug("Could not evaluate inside the frame: %s", exc)
+            return None
+
+    async def _target_by_url(self, needle: str, wait: int = 0):
+        """A window Chrome runs in its own process, found by part of its address."""
+        for attempt in range(max(1, wait // 4)):
+            try:
+                await self.browser.update_targets()
+                found = [t for t in self.browser.targets
+                         if needle.lower() in str(getattr(getattr(t, "target", None), "url", "") or "").lower()]
+                if found:
+                    return found[-1]
+            except Exception as exc:
+                self.logger.debug("Could not list browser windows: %s", exc)
+            if attempt + 1 < max(1, wait // 4):
+                await self.sleep(4)
+        return None
+
+    async def _type_into_node(self, node_id, text: str) -> bool:
+        """Focus a field, inside a frame as well, and type into it the way a keyboard would."""
+        try:
+            await self.page.send(uc.cdp.dom.focus(node_id=node_id))
+            await self.page.send(uc.cdp.input_.insert_text(text=text))
+            return True
+        except Exception as exc:
+            self.logger.debug("Could not type into the field: %s", exc)
+            return False
+
+    # ------------------------------------------------------------------
     # Screenshot helper
     # ------------------------------------------------------------------
 
@@ -525,15 +671,6 @@ class BaseClaimer:
     # ------------------------------------------------------------------
     # Utilities
     # ------------------------------------------------------------------
-
-    async def wait_for(self, selector: str, timeout: int | None = None) -> uc.Element | None:
-        """Wait for an element matching the CSS selector to appear."""
-        timeout = timeout or (cfg.timeout // 1000)
-        try:
-            element = await self.page.find(selector, timeout=timeout)
-            return element
-        except Exception:
-            return None
 
     def _vnc_notice(self, title: str, body: str, timeout: int | None = None) -> str:
         """Build a consistent 'do X via VNC' notification with the autoconnect link."""
@@ -641,7 +778,8 @@ class BaseClaimer:
             )
         self.logger.info("Open %s to finish manually (waiting %ds).", cfg.vnc_url, timeout)
 
-        if cfg.notify_login_request and self.notify_enabled:
+        # GamerPower's sites are silenced by their own name (store_key), not by "gamerpower".
+        if cfg.notify_login_request and self.notify_enabled and cfg.store_notify_enabled(key):
             await notify(msg)
 
         elapsed = 0
@@ -675,39 +813,24 @@ class BaseClaimer:
         if not self.page:
             return False
         try:
-            return bool(await self.page.evaluate(r"""
-                (() => {
-                    const t = (document.title || '').toLowerCase();
-                    if (t.includes('just a moment') || t.includes('attention required') || t.includes('one more step')) return true;
-                    if (document.querySelector('#challenge-form, #challenge-running, #cf-challenge-running, .cf-turnstile, iframe[src*="challenges.cloudflare.com"]')) return true;
-                    const rx = /hcaptcha|arkoselabs|funcaptcha|arkose|px-captcha|geetest|turnstile/i;
-                    const frames = [...document.querySelectorAll('iframe')];
-                    if (frames.some(f => rx.test((f.getAttribute('src') || '') + ' ' + (f.getAttribute('title') || '')))) return true;
-                    if (document.querySelector('#h_captcha, #talon_frame_login_prod, #FunCaptcha, [id*="arkose" i]')) return true;
-                    // Google reCAPTCHA: only the visible checkbox counts. Sites keep an invisible
-                    // scoring frame on ordinary pages, and that must never read as a challenge.
-                    const visible = el => { const r = el.getBoundingClientRect(); return r.width > 60 && r.height > 40; };
-                    if (frames.some(f => /recaptcha\/(api2|enterprise)\/anchor/i.test(f.getAttribute('src') || '') && visible(f))) return true;
-                    const b = (document.body ? (document.body.innerText || '') : '').toLowerCase();
-                    if (b.includes('verify you are human') || b.includes('checking your browser') || b.includes('complete a security check') || b.includes('needs to review the security of your connection')) return true;
-                    if (b.includes("check that you're a real person") || b.includes('check that you are a real person')) return true;
-                    return false;
-                })()
-            """))
+            return bool(await self.page.evaluate(CHALLENGE_JS))
         except Exception:
             return False
 
-    async def _wait_out_challenge(self, label: str, settle: int = 12, store_key: str | None = None) -> bool:
+    async def _wait_out_challenge(self, label: str, settle: int = 12, store_key: str | None = None,
+                                  present_fn=None) -> bool:
         """Clear a human-check: let it auto-pass, else alert the user to solve via VNC.
 
         First waits up to ``settle`` seconds for a managed/invisible challenge to
         clear on its own (so we don't ping the user needlessly). If it's still
         blocking, sends a single VNC alert and polls until it's gone or the login
         timeout hits. Returns True if the challenge cleared, False on timeout.
+        ``present_fn`` looks somewhere other than the page itself, e.g. inside a checkout frame.
         """
+        present = present_fn or self._human_challenge_present
         waited = 0
         while waited < settle:
-            if not await self._human_challenge_present():
+            if not await present():
                 return True
             await asyncio.sleep(2)
             waited += 2
@@ -719,7 +842,7 @@ class BaseClaimer:
         )
 
         async def _cleared() -> bool:
-            return not await self._human_challenge_present()
+            return not await present()
 
         return await self._wait_for_vnc_login(_cleared, custom_msg=custom_msg, store_key=store_key)
 

@@ -9,7 +9,10 @@ import json
 import re
 import asyncio
 import httpx
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
+
+import nodriver as uc
 
 from sqlalchemy import select
 
@@ -34,6 +37,8 @@ _STORE_HOSTS = (
     ("steam", "store.steampowered.com"),
     ("epic", "epicgames.com"),
     ("gog", "gog.com"),
+    ("microsoft", "xbox.com"),
+    ("microsoft", "microsoft.com"),
     ("fanatical", "fanatical.com"),
     ("alienware", "alienwarearena.com"),
     ("itchio", "itch.io"),
@@ -154,10 +159,170 @@ FAN_SUBMIT_JS = """
 """
 
 
+# IndieGala's notification prompt and cookie banner sit over its login form until answered.
+IG_DISMISS_JS = """
+    (() => {
+        const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        for (const b of [...document.querySelectorAll('button')].filter(vis)) {
+            if (/^(don't allow|i agree)$/i.test((b.textContent || '').trim())) b.click();
+        }
+    })()
+"""
+
+# IndieGala's login fields carry no name or id, so the visible pair is marked and then typed into.
+IG_MARK_FIELDS_JS = """
+    (() => {
+        const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        const pass = [...document.querySelectorAll('input[type="password"]')].find(vis);
+        if (!pass) return false;
+        let scope = pass.parentElement, mail = null;
+        for (let i = 0; i < 6 && scope && !mail; i++, scope = scope.parentElement) {
+            mail = [...scope.querySelectorAll('input[type="text"], input[type="email"]')].find(vis) || null;
+        }
+        if (!mail) return false;
+        mail.setAttribute('data-fgc-mail', '1');
+        pass.setAttribute('data-fgc-pass', '1');
+        return true;
+    })()
+"""
+
+# Owned means no ADD TO LIBRARY and "just go to your Library"; every page says "Search in your library".
+IG_OWNED_JS = """
+    (() => {
+        const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        const offered = [...document.querySelectorAll('a, button')].filter(vis)
+            .some(b => /^add to library$/i.test((b.innerText || '').trim()));
+        return !offered && /just go to your library/i.test(document.body ? document.body.innerText : '');
+    })()
+"""
+
+# Marked so the claim is a real click on the one visible ADD TO LIBRARY, not a scripted one.
+IG_MARK_CLAIM_JS = """
+    (() => {
+        const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        const b = [...document.querySelectorAll('a, button')].filter(vis)
+            .find(x => /^add to library$/i.test((x.innerText || '').trim()));
+        if (!b) return false;
+        b.setAttribute('data-fgc-claim', '1');
+        return true;
+    })()
+"""
+
+# The login page always carries a reCAPTCHA checkbox; unsolved until its answer box holds a token.
+IG_CAPTCHA_UNSOLVED_JS = """
+    (() => {
+        const frame = [...document.querySelectorAll('iframe')].find(f => {
+            const r = f.getBoundingClientRect();
+            return /recaptcha\\/(api2|enterprise)\\/anchor/.test(f.src || '') && !/[?&]size=invisible/.test(f.src || '')
+                && r.width >= 60 && r.height >= 40;
+        });
+        if (!frame) return false;
+        let box = frame.parentElement, answer = null;
+        for (let i = 0; i < 4 && box && !answer; i++, box = box.parentElement) {
+            answer = box.querySelector('textarea.g-recaptcha-response, textarea[name="g-recaptcha-response"]');
+        }
+        if (answer && answer.value) return false;
+        frame.scrollIntoView({block: 'center'});
+        return true;
+    })()
+"""
+
+# The page carries other submit buttons (the prompt's ×), so LOGIN is looked up beside the password.
+IG_SUBMIT_JS = """
+    (() => {
+        const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        let scope = document.querySelector('[data-fgc-pass]');
+        for (let i = 0; i < 6 && scope; i++, scope = scope.parentElement) {
+            const b = [...scope.querySelectorAll('button, input[type="submit"]')].filter(vis)
+                .find(x => /^log ?in$/i.test((x.textContent || x.value || '').trim()));
+            if (b) { b.click(); return true; }
+        }
+        return false;
+    })()
+"""
+
+
+def indiegala_game_id(url: str) -> str:
+    """IndieGala's own identifier for a freebie: the slug in `freebies.indiegala.com/<slug>`."""
+    parsed = urlparse(str(url or ""))
+    slug = parsed.path.strip("/").split("/")[0].lower()
+    if not url_has_allowed_host(str(url or ""), "indiegala.com", allow_subdomains=True) or not slug:
+        return ""
+    return slug
+
+
 def fanatical_game_id(url: str) -> str:
     """Fanatical's own identifier for a giveaway: the slug behind /game/ or /giveaway/."""
     match = re.search(r"/(?:game|giveaway|bundle)/([a-z0-9-]+)", str(url or "").lower())
     return match.group(1) if match else ""
+
+
+# Fanatical's account API takes the token its own site keeps in localStorage ("bsauth"), read live 4.10.
+FAN_ORDERS_JS = """
+    (async () => {
+        try {
+            const auth = JSON.parse(localStorage.getItem('bsauth') || '{}');
+            if (!auth.token) return JSON.stringify({status: 0});
+            const r = await fetch('/api/user/orders', {headers: {authorization: auth.token, accept: 'application/json'}});
+            return JSON.stringify({status: r.status, orders: r.ok ? await r.json() : null});
+        } catch (e) {
+            return JSON.stringify({status: -1, error: String(e).slice(0, 120)});
+        }
+    })()
+"""
+
+# The call Fanatical's own "Reveal key" button makes, sent for one order item only.
+FAN_REVEAL_JS = """
+    (async () => {
+        try {
+            const auth = JSON.parse(localStorage.getItem('bsauth') || '{}');
+            let atok = '';
+            try { atok = JSON.parse(localStorage.getItem('bsatok') || '{}').value || ''; } catch (e) {}
+            const r = await fetch('/api/user/orders/redeem', {method: 'POST',
+                headers: {authorization: auth.token, 'content-type': 'application/json', accept: 'application/json'},
+                body: JSON.stringify({...__PAYLOAD__, atok})});
+            return JSON.stringify({status: r.status, data: r.ok ? await r.json() : null});
+        } catch (e) {
+            return JSON.stringify({status: -1, error: String(e).slice(0, 120)});
+        }
+    })()
+"""
+
+STEAM_KEY_RE = re.compile(r"^[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{5}$")
+OTHER_DRM = ("epic", "gog", "uplay", "ubisoft", "origin", "ea app", "battle.net", "microsoft", "xbox", "rockstar")
+
+
+def find_fanatical_item(orders, slug: str, title: str) -> dict | None:
+    """This giveaway's order item as {"oid", "bid", "item"}, matched by slug or name, never by position."""
+    want = BaseClaimer._normalize_title(title)
+    for order in orders if isinstance(orders, list) else []:
+        if not isinstance(order, dict):
+            continue
+        for item in order.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            text = json.dumps(item).lower()
+            if (slug and f'"{slug.lower()}"' in text) or (want and BaseClaimer._normalize_title(item.get("name") or "") == want):
+                return {"oid": order.get("_id"), "bid": item.get("bid"), "item": item}
+    return None
+
+
+def steam_key_in(value) -> str:
+    """The first Steam-shaped key anywhere in a Fanatical answer, empty when there is none."""
+    if isinstance(value, str):
+        return value.strip().upper() if STEAM_KEY_RE.match(value.strip().upper()) else ""
+    children = value.values() if isinstance(value, dict) else value if isinstance(value, list) else []
+    for child in children:
+        found = steam_key_in(child)
+        if found:
+            return found
+    return ""
+
+
+def fanatical_item_is_steam(item: dict) -> bool:
+    """A key is sent to Steam only when the item names Steam or no other platform."""
+    text = json.dumps(item or {}).lower()
+    return "steam" in text or not any(drm in text for drm in OTHER_DRM)
 
 
 # An owned itch.io game carries a purchase banner; a page you do not own carries none.
@@ -350,6 +515,7 @@ class GamerPowerClaimer(BaseClaimer):
         self._fanatical_games = []
         # Itch.io signs in once per run, not once per giveaway.
         self._itch_session_ok = False
+        self._ig_session_noted = False
 
     async def run(self, routed: dict | None = None) -> None:
         """Claim the giveaways that land on sites with no store module of their own."""
@@ -411,6 +577,7 @@ class GamerPowerClaimer(BaseClaimer):
         """Claim one giveaway on a side site, in the browser this claimer already opened."""
         title = game.get("title", "Unknown")
         label, handler = self._side_store(target_store)
+        reported = len(self.notify_games)
 
         try:
             if handler:
@@ -424,6 +591,11 @@ class GamerPowerClaimer(BaseClaimer):
                 await self.sleep(10)
         except Exception:
             logger.exception("[GamerPower] Error processing '%s'", title)
+
+        # The summary lists these sites under GamerPower, so NOTIFY_SKIP_STORES is applied per site here.
+        if not cfg.store_notify_enabled(target_store):
+            logger.debug("Notifications silenced for '%s', leaving '%s' out of the summary.", target_store, title)
+            del self.notify_games[reported:]
 
     async def _itch_logged_in(self) -> bool:
         """Signed in when itch.io offers a logout link and no login link. Verified live."""
@@ -636,6 +808,13 @@ class GamerPowerClaimer(BaseClaimer):
         self._mark_code_used(code, used_name, codes)
         return True
 
+    def _no_credentials_notice(self, label: str, prefix: str) -> str:
+        """The VNC prompt for a side store with no password set, named after the site, not this module."""
+        return self._vnc_notice(
+            f"{label}: login needs you",
+            f"No {prefix}_EMAIL / {prefix}_PASSWORD set. Open the browser and sign in to {label}.",
+        )
+
     async def _clear_challenge(self, label: str) -> bool:
         """Let a captcha that shows up mid-claim be solved, instead of failing quietly."""
         if not await self._human_challenge_present():
@@ -675,6 +854,75 @@ class GamerPowerClaimer(BaseClaimer):
         await self.page.evaluate(FAN_SUBMIT_JS)
         await self.sleep(8)
 
+    async def _fanatical_orders(self) -> list | None:
+        """Your Fanatical orders from the account API, None when the API cannot be read."""
+        try:
+            raw = await self.page.evaluate(FAN_ORDERS_JS, await_promise=True)
+            answer = json.loads(raw) if isinstance(raw, str) else {}
+        except Exception as e:
+            logger.debug("[Fanatical] Could not read the orders: %s", e)
+            return None
+        if answer.get("status") != 200 or not isinstance(answer.get("orders"), list):
+            logger.debug("[Fanatical] Orders API answered %s %s", answer.get("status"), answer.get("error", ""))
+            return None
+        logger.debug("[Fanatical] %d order(s) on the account.", len(answer["orders"]))
+        return answer["orders"]
+
+    async def _fanatical_reveal_key(self, found: dict, title: str) -> str:
+        """This one item's key, revealed the way Fanatical's own button does; empty when it cannot."""
+        key = steam_key_in(found["item"])
+        if key:
+            return key
+        item = found["item"]
+        payload = {"oid": found.get("oid"), "pid": item.get("_id"), "serialId": item.get("serialId"),
+                   "iid": item.get("iid")}
+        if found.get("bid"):
+            payload["bid"] = found["bid"]
+        try:
+            raw = await self.page.evaluate(FAN_REVEAL_JS.replace("__PAYLOAD__", json.dumps(payload)),
+                                           await_promise=True)
+            answer = json.loads(raw) if isinstance(raw, str) else {}
+        except Exception as e:
+            logger.debug("[Fanatical] Could not reveal the key for '%s': %s", title, e)
+            return ""
+        key = steam_key_in(answer.get("data"))
+        logger.debug("[Fanatical] Key reveal for '%s' answered %s, Steam key found: %s",
+                     title, answer.get("status"), bool(key))
+        return key
+
+    async def _fanatical_page_says_claimed(self) -> bool:
+        """Fallback when the orders API cannot be read: the giveaway page's own words."""
+        body = await self.page.evaluate("(document.body?.innerText || '').toLowerCase()")
+        return "already claimed" in str(body) or "you have claimed" in str(body)
+
+    async def _fanatical_claim_left_page(self) -> bool:
+        """Fallback when the orders API cannot be read: the claim button is gone or the page says so."""
+        return bool(await self.page.evaluate("""
+            (() => {
+                const body = (document.body?.innerText || '').toLowerCase();
+                const stillOffered = [...document.querySelectorAll('button, a')].some(b => {
+                    const t = (b.textContent || '').trim().toLowerCase();
+                    return t === 'claim this game' || t === 'claim game';
+                });
+                const says = /already claimed|you have claimed|successfully claimed|in your library/.test(body);
+                return says || !stillOffered;
+            })()
+        """))
+
+    async def _remember_fanatical(self, game_id: str, title: str, url: str, status: str, steam_key: str = "") -> None:
+        """Store a Fanatical outcome; a key still waiting for Steam keeps its "claimed" row."""
+        async with async_session() as session:
+            obj, _ = await get_or_create(
+                session, store="fanatical", user=self.user,
+                game_id=game_id, title=title, url=url, status=status,
+            )
+            if not (status == "existed" and str(obj.status or "").startswith("claimed")):
+                obj.status = status
+            if steam_key:
+                obj.code = steam_key
+                obj.extra = json.dumps({"external_store": "steam"})
+            await session.commit()
+
     async def _itch_owns_this(self) -> bool:
         """True when the open game page shows itch.io's own-this banner. Language independent."""
         try:
@@ -696,7 +944,7 @@ class GamerPowerClaimer(BaseClaimer):
         return first_time
 
     async def _itch_run_claim(self, title: str) -> str:
-        """Walk itch.io's claim chain. Returns "clicked", "download-only" or "blocked"."""
+        """Walk itch.io's claim chain. Returns "clicked", "download-only", "not-free" or "blocked"."""
         purchase = await self.page.evaluate("""
             (() => {
                 const a = document.querySelector('a.buy_btn[href], a.button.buy_btn[href]');
@@ -722,8 +970,7 @@ class GamerPowerClaimer(BaseClaimer):
             })()
         """)
         if not went_free:
-            logger.warning("[Itch.io] '%s' is not free right now, refusing to go further.", title)
-            return "blocked"
+            return "not-free"
         await self.sleep(6)
 
         # The download page carries the one control that puts the game in your library.
@@ -760,23 +1007,6 @@ class GamerPowerClaimer(BaseClaimer):
             if not current_url.startswith(url):
                 await self.page.get(url)
                 await self.sleep(4)
-
-            # Check already claimed
-            body_text = await self.page.evaluate("(document.body?.innerText || '').toLowerCase()")
-            if "already claimed" in body_text or "you have claimed" in body_text:
-                logger.info("[Fanatical] '%s' already claimed.", title)
-                if cfg.dryrun:
-                    notify_game["status"] = "existed"
-                    return
-                async with async_session() as session:
-                    obj, _ = await get_or_create(
-                        session, store="fanatical", user=self.user,
-                        game_id=game_id, title=title, url=url, status="existed",
-                    )
-                    obj.status = "existed"
-                    await session.commit()
-                notify_game["status"] = "existed"
-                return
 
             needs_login = await self.page.evaluate("""
                 (() => {
@@ -815,13 +1045,28 @@ class GamerPowerClaimer(BaseClaimer):
                     self._log_side_signed_in("Fanatical", email)
                 else:
                     logger.warning("[Fanatical] No credentials set (FANATICAL_EMAIL/PASSWORD). Waiting for VNC...")
-                    if not await self._wait_for_vnc_login(self._fanatical_signed_in, store_key="fanatical"):
+                    if not await self._wait_for_vnc_login(
+                            self._fanatical_signed_in, custom_msg=self._no_credentials_notice("Fanatical", "FANATICAL"),
+                            store_key="fanatical"):
                         return
 
             current_url = str(await self.page.evaluate("window.location.href") or "")
             if not current_url.startswith(url):
                 await self.page.get(url)
                 await self.sleep(4)
+
+            # Ownership comes from your orders; the page's own words count only when that API cannot be read.
+            orders = await self._fanatical_orders()
+            if orders is not None:
+                owned = find_fanatical_item(orders, game_id, title) is not None
+            else:
+                owned = await self._fanatical_page_says_claimed()
+            if owned:
+                logger.info("[Fanatical] '%s' already claimed.", title)
+                if not cfg.dryrun:
+                    await self._remember_fanatical(game_id, title, url, "existed")
+                notify_game["status"] = "existed"
+                return
 
             if cfg.dryrun:
                 logger.info("DRYRUN – skipped '%s'.", title)
@@ -851,32 +1096,30 @@ class GamerPowerClaimer(BaseClaimer):
                     break
                 await self.sleep(2)
 
-            # The old code reported a win whether or not the page agreed with it.
-            claimed = False
+            # A claim is a giveaway order, so it counts once that order is on the account.
+            claimed, found = False, None
             if clicked:
                 await self.sleep(6)
-                claimed = bool(await self.page.evaluate("""
-                    (() => {
-                        const body = (document.body?.innerText || '').toLowerCase();
-                        const stillOffered = [...document.querySelectorAll('button, a')].some(b => {
-                            const t = (b.textContent || '').trim().toLowerCase();
-                            return t === 'claim this game' || t === 'claim game';
-                        });
-                        const says = /already claimed|you have claimed|successfully claimed|in your library/.test(body);
-                        return says || !stillOffered;
-                    })()
-                """))
+                if orders is not None:
+                    for _ in range(3):
+                        found = find_fanatical_item(await self._fanatical_orders() or [], game_id, title)
+                        if found:
+                            break
+                        await self.sleep(5)
+                    claimed = found is not None
+                else:
+                    claimed = await self._fanatical_claim_left_page()
 
             if claimed:
-                logger.info("✓ [Fanatical] Claimed '%s'!", title)
-                async with async_session() as session:
-                    obj, _ = await get_or_create(
-                        session, store="fanatical", user=self.user,
-                        game_id=game_id, title=title, url=url, status="claimed",
-                    )
-                    obj.status = "claimed"
-                    await session.commit()
-                notify_game["status"] = "claimed"
+                key = await self._fanatical_reveal_key(found, title) if found else ""
+                steam_key = key if key and fanatical_item_is_steam(found["item"]) else ""
+                await self._remember_fanatical(game_id, title, url, "claimed", steam_key)
+                if steam_key and is_store_active("steam"):
+                    logger.info("✓ [Fanatical] Claimed '%s', its Steam key is activated at the end of this run.", title)
+                    notify_game["status"] = "claimed"
+                else:
+                    logger.info("✓ [Fanatical] Claimed '%s', the key is in your Fanatical library.", title)
+                    notify_game["status"] = "claimed, key in your Fanatical library 🔑"
                 await self.take_screenshot(f"fanatical_{filenamify(title)}")
             else:
                 logger.warning("[Fanatical] '%s' was not confirmed as claimed (clicked: %s).", title, clicked)
@@ -963,6 +1206,11 @@ class GamerPowerClaimer(BaseClaimer):
 
         await self.page.get("https://itch.io/")
         await self.sleep(3)
+        # Cloudflare's "Just a moment" page has no logout link, so judging it read as signed out (#59).
+        if await self._human_challenge_present():
+            logger.debug("[Itch.io] Waiting for the Cloudflare check to pass before judging the session.")
+            if not await self._wait_out_challenge("Itch.io", store_key="itchio"):
+                return False
         if await self._itch_logged_in():
             self._itch_session_ok = True
             return True
@@ -971,7 +1219,9 @@ class GamerPowerClaimer(BaseClaimer):
         password = cfg.itchio_password
         if not (email and password):
             logger.warning("[Itch.io] No credentials set (ITCHIO_EMAIL/PASSWORD). Waiting for VNC...")
-            self._itch_session_ok = await self._wait_for_vnc_login(self._itch_logged_in, store_key="itchio")
+            self._itch_session_ok = await self._wait_for_vnc_login(
+                self._itch_logged_in, custom_msg=self._no_credentials_notice("Itch.io", "ITCHIO"),
+                store_key="itchio")
             return self._itch_session_ok
 
         logger.info("[Itch.io] Logging in as %s…", mask_account(email))
@@ -1031,6 +1281,11 @@ class GamerPowerClaimer(BaseClaimer):
                 return
 
             walked = await self._itch_run_claim(title)
+            if walked == "not-free":
+                # GamerPower keeps listing a sale after it drops below 100%, that is no news for you.
+                logger.info("[Itch.io] '%s' is not free on itch.io right now, skipping.", title)
+                self.notify_games.remove(notify_game)
+                return
 
             # The claim only counts when itch.io says the game is on the account. Clicking
             # through the downloads without claiming leaves you with a file and nothing else.
@@ -1065,10 +1320,89 @@ class GamerPowerClaimer(BaseClaimer):
     # ─────────────────────────────────────────────────────────────────────
     # IndieGala
     # ─────────────────────────────────────────────────────────────────────
+    async def _indiegala_login(self, email: str, password: str) -> None:
+        """Type into IndieGala's login page the way a person would; the old fill never found the e-mail field."""
+        await self.page.get("https://www.indiegala.com/login")
+        await self.sleep(4)
+        await self.page.evaluate(IG_DISMISS_JS)
+        await self.sleep(1)
+        if not await self.page.evaluate(IG_MARK_FIELDS_JS):
+            logger.debug("[IndieGala] The login page did not offer both fields.")
+            return
+        for selector, value in (("[data-fgc-mail]", email), ("[data-fgc-pass]", password)):
+            field = await self.page.select(selector, timeout=8)
+            if not field:
+                return
+            await field.click()
+            await self.sleep(0.4)
+            await field.send_keys(value)
+            await self.sleep(0.6)
+        # Without a ticked box IndieGala answers "[e030] Please answer the captcha" and signs nobody in.
+        if await self._ig_captcha_unsolved():
+            logger.info("[IndieGala] The login page asks for its captcha, handing it to you.")
+            if not await self._wait_out_challenge("IndieGala", store_key="indiegala",
+                                                  present_fn=self._ig_captcha_unsolved):
+                return
+        try:
+            if not await self.page.evaluate(IG_SUBMIT_JS):
+                logger.debug("[IndieGala] No LOGIN button beside the password field.")
+        except Exception as e:
+            # You may have pressed LOGIN yourself after ticking the box, and the page is already leaving.
+            logger.debug("[IndieGala] LOGIN not pressed, the page was navigating: %s", e)
+        await self.sleep(6)
+
+    async def _ig_captcha_unsolved(self) -> bool:
+        """True while the login page's reCAPTCHA box is shown and not yet ticked."""
+        try:
+            return bool(await self.page.evaluate(IG_CAPTCHA_UNSOLVED_JS))
+        except Exception as e:
+            logger.debug("[IndieGala] Captcha check failed: %s", e)
+            return False
+
+    async def _ig_owns_this(self) -> bool:
+        """True when the open freebie page says it is in your library. Only meaningful signed in."""
+        try:
+            return bool(await self.page.evaluate(IG_OWNED_JS))
+        except Exception as e:
+            logger.debug("[IndieGala] Ownership check failed: %s", e)
+            return False
+
+    async def _ig_note_session(self) -> None:
+        """Say once per run until when IndieGala keeps this sign-in; it is 14 days and visits do not extend it."""
+        if self._ig_session_noted:
+            return
+        self._ig_session_noted = True
+        try:
+            cookies = await self.page.send(uc.cdp.network.get_cookies(urls=["https://www.indiegala.com/"]))
+        except Exception as e:
+            logger.debug("[IndieGala] Could not read the session cookie: %s", e)
+            return
+        sid = next((c for c in cookies if c.name == "sessionid"), None)
+        if not sid or sid.session:
+            logger.debug("[IndieGala] No dated session cookie to report.")
+            return
+        until = datetime.fromtimestamp(sid.expires, timezone.utc)
+        if until - datetime.now(timezone.utc) < timedelta(days=2):
+            logger.info("[IndieGala] The sign-in ends on %s, the next IndieGala giveaway after that asks you "
+                        "for its captcha again.", until.strftime("%Y-%m-%d"))
+        else:
+            logger.debug("[IndieGala] Signed in until %s.", until.strftime("%Y-%m-%d %H:%M UTC"))
+
+    async def _remember_indiegala(self, game_id: str, title: str, url: str, status: str) -> None:
+        """Store an IndieGala outcome under IndieGala's own slug."""
+        async with async_session() as session:
+            obj, _ = await get_or_create(
+                session, store="indiegala", user=self.user,
+                game_id=game_id, title=title, url=url, status=status,
+            )
+            obj.status = status
+            await session.commit()
+
     async def _claim_indiegala_game(self, game: dict) -> None:
         title = game.get("title", "Unknown")
         url = game.get("url", "")
         giveaway_url = game.get("giveaway_url", url)
+        game_id = indiegala_game_id(game.get("final_url") or url) or giveaway_url
 
         notify_game = {"title": f"{title} (IndieGala)", "url": url, "status": "failed"}
         self.notify_games.append(notify_game)
@@ -1081,20 +1415,6 @@ class GamerPowerClaimer(BaseClaimer):
                 await self.page.get(url)
                 await self.sleep(4)
 
-            # Check if already owned
-            body_text = await self.page.evaluate("(document.body?.innerText || '').toLowerCase()")
-            if "already in your library" in body_text or "in your library" in body_text:
-                logger.info("[IndieGala] '%s' already owned.", title)
-                async with async_session() as session:
-                    obj, _ = await get_or_create(
-                        session, store="indiegala", user=self.user,
-                        game_id=giveaway_url, title=title, url=url, status="existed",
-                    )
-                    obj.status = "existed"
-                    await session.commit()
-                notify_game["status"] = "existed"
-                return
-
             # Check if login needed
             # One check decides, so detection and confirmation cannot drift apart (issue #47).
             if not await self._ig_logged_in():
@@ -1102,29 +1422,7 @@ class GamerPowerClaimer(BaseClaimer):
                 password = cfg.indiegala_password
                 if email and password:
                     logger.info("[IndieGala] Logging in as %s…", mask_account(email))
-                    await self.page.get("https://www.indiegala.com/login")
-                    await self.sleep(4)
-
-                    js_email = json.dumps(email)
-                    js_password = json.dumps(password)
-                    await self.page.evaluate(f'''
-                        (() => {{
-                            const emailInp = document.querySelector('input[name="email"], input[type="email"]');
-                            const passInp = document.querySelector('input[name="password"], input[type="password"]');
-                            if (emailInp) {{
-                                let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-                                if(setter) {{ setter.call(emailInp, {js_email}); emailInp.dispatchEvent(new Event("input", {{bubbles: true}})); }}
-                            }}
-                            if (passInp) {{
-                                let setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-                                if(setter) {{ setter.call(passInp, {js_password}); passInp.dispatchEvent(new Event("input", {{bubbles: true}})); }}
-                            }}
-                            const submit = document.querySelector('button[type="submit"], input[type="submit"]') ||
-                                [...document.querySelectorAll('button')].find(b => (b.textContent || '').toLowerCase().includes('log in'));
-                            if (submit) submit.click();
-                        }})()
-                    ''')
-                    await self.sleep(6)
+                    await self._indiegala_login(email, password)
 
                     if not await self._confirm_side_login("IndieGala", self._ig_logged_in,
                                                           credentials=(email, password)):
@@ -1136,52 +1434,49 @@ class GamerPowerClaimer(BaseClaimer):
                     await self.sleep(4)
                 else:
                     logger.warning("[IndieGala] No credentials set (INDIEGALA_EMAIL/PASSWORD). Waiting for VNC...")
-                    if not await self._wait_for_vnc_login(self._ig_logged_in, store_key="indiegala"):
+                    if not await self._wait_for_vnc_login(
+                            self._ig_logged_in, custom_msg=self._no_credentials_notice("IndieGala", "INDIEGALA"),
+                            store_key="indiegala"):
                         return
 
-            # Try to click claim / add-to-library button
+            await self._ig_note_session()
+            if not await self._clear_challenge("IndieGala"):
+                return
+
+            # Judged only now: signed out, no page says whether you own it.
+            if await self._ig_owns_this():
+                logger.info("[IndieGala] '%s' already owned.", title)
+                if not cfg.dryrun:
+                    await self._remember_indiegala(game_id, title, url, "existed")
+                notify_game["status"] = "existed"
+                return
+
             if cfg.dryrun:
                 logger.info("DRYRUN – skipped '%s'.", title)
                 notify_game["status"] = "available (dry run)"
                 return
 
-            claimed = False
-            for _ in range(5):
-                clicked = await self.page.evaluate("""
-                    (() => {
-                        const btns = [...document.querySelectorAll('button, a, div[role="button"]')];
-                        const claim = btns.find(b => {
-                            const t = (b.textContent || '').trim().toLowerCase();
-                            return t.includes('add to library') || t.includes('claim')
-                                || t.includes('get it free') || t.includes('grab it');
-                        });
-                        if (claim && !claim.disabled) { claim.click(); return true; }
-                        return false;
-                    })()
-                """)
-                if clicked:
-                    await self.sleep(4)
-                    body_after = await self.page.evaluate("(document.body?.innerText || '').toLowerCase()")
-                    if "library" in body_after or "success" in body_after or "claimed" in body_after:
-                        claimed = True
-                        break
-                    claimed = True
-                    break
-                await self.sleep(2)
+            if not await self.page.evaluate(IG_MARK_CLAIM_JS):
+                logger.warning("[IndieGala] '%s' offers no ADD TO LIBRARY button.", title)
+                await self.take_screenshot(f"indiegala_fail_{filenamify(title)}")
+                return
+            button = await self.page.select("[data-fgc-claim]", timeout=8)
+            await button.scroll_into_view()
+            await self.sleep(0.8)
+            await button.click()
+            # The button reads "Added!" for a moment and then goes; the reloaded page is what counts.
+            await self.sleep(4)
+            await self.page.get(url)
+            await self.sleep(5)
 
-            if claimed:
+            if await self._ig_owns_this():
                 logger.info("✓ [IndieGala] Claimed '%s'!", title)
-                async with async_session() as session:
-                    obj, _ = await get_or_create(
-                        session, store="indiegala", user=self.user,
-                        game_id=giveaway_url, title=title, url=url, status="claimed",
-                    )
-                    obj.status = "claimed"
-                    await session.commit()
+                await self._remember_indiegala(game_id, title, url, "claimed")
                 notify_game["status"] = "claimed"
                 await self.take_screenshot(f"indiegala_{filenamify(title)}")
             else:
-                logger.warning("[IndieGala] Could not claim '%s'", title)
+                logger.warning("[IndieGala] '%s' is not in your library after the click.", title)
+                notify_game["status"] = "failed:unconfirmed"
                 await self.take_screenshot(f"indiegala_fail_{filenamify(title)}")
 
         except Exception:

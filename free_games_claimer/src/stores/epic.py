@@ -12,7 +12,7 @@ import nodriver as uc
 import pyotp
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from src.core.claimer import BaseClaimer, OTP_KEY_ATTEMPTS, now_str
+from src.core.claimer import BaseClaimer, CHALLENGE_JS, OTP_KEY_ATTEMPTS, now_str
 from src.core.config import cfg
 from src.core.run_state import needs_you, waits_for_nobody
 from src.core.database import async_session, get_or_create
@@ -70,6 +70,10 @@ JSON.stringify((() => {
         if (t.includes('in library') || t.includes('owned')) return { text: t, flow: 'owned' };
     }
 
+    // Epic swaps the whole product page for this sentence when the game is blocked where you are.
+    const heading = (document.querySelector('h1')?.textContent || '').toLowerCase();
+    if (heading.includes('unavailable in your platform or region')) return { text: '', flow: 'region' };
+
     return { text: '', flow: 'unknown' };
 })())
 """
@@ -79,6 +83,21 @@ def is_owned(state: dict) -> bool:
     """True when the page offers no way to claim any more, only a link into the library."""
     state = state or {}
     return state.get("flow") == "owned" or "in library" in (state.get("text") or "").lower()
+
+
+def is_region_locked(state: dict) -> bool:
+    """True on Epic's "unavailable in your platform or region" page, which carries no game at all."""
+    return (state or {}).get("flow") == "region"
+
+
+def region_locked_status(previous: str | None) -> str | None:
+    """A game you already took stays owned; anything else leaves the summary, you can do nothing about it."""
+    return "existed" if (previous or "") in ("claimed", "existed") else None
+
+
+def title_from_slug(game_id: str) -> str:
+    """`buried-stars-d7c88c` -> `Buried Stars`, for when the page has no name to read."""
+    return re.sub(r" [0-9a-f]{6}$", "", (game_id or "").replace("-", " "), flags=re.I).title()
 
 
 class EpicGamesClaimer(BaseClaimer):
@@ -142,7 +161,11 @@ class EpicGamesClaimer(BaseClaimer):
             # --- Claim each game, then whatever GamerPower found for Epic ---
             for game in free_games:
                 await self._claim_game(game["url"])
+            handled = {url.rstrip("/").split("/")[-1] for url in (g["url"] for g in free_games)}
             for game in (extra_games or []):
+                if game["final_url"].rstrip("/").split("/")[-1] in handled:
+                    logger.debug("[GamerPower] '%s' is on Epic's own list, already handled.", game.get("title"))
+                    continue
                 logger.info("🎮 [GamerPower] '%s' → Epic Games", game.get("title", "Unknown"))
                 await self._claim_game(game["final_url"])
 
@@ -385,9 +408,11 @@ class EpicGamesClaimer(BaseClaimer):
                 except Exception:
                     pass
 
-                # Captcha/challenge can't be auto-solved, stop retrying and hand off to VNC below.
+                # A check is yours to clear, and then the bot sends the filled form itself.
                 if wait_sec >= 4 and await self._human_challenge_present():
                     logger.warning("Captcha / security challenge detected during Epic login.")
+                    if await self._wait_out_challenge("Epic", store_key=self.store_name)                             and await self._press_sign_in():
+                        continue
                     challenge_blocked = True
                     break
 
@@ -397,8 +422,8 @@ class EpicGamesClaimer(BaseClaimer):
             if not mfa_manual and await self._mfa_prompt_present():
                 mfa_manual = True
 
-            # On a manual-code screen, don't navigate away, hand off to VNC below.
-            if mfa_manual:
+            # A code screen or a captcha is yours to finish, so the page is left exactly as it stands.
+            if mfa_manual or challenge_blocked:
                 break
 
             # verify success
@@ -408,9 +433,6 @@ class EpicGamesClaimer(BaseClaimer):
                 self.user = await _get_display_name() or cfg.eg_email or "EpicUser"
                 self.log_signed_in()
                 return True
-
-            if challenge_blocked:
-                break  # retrying won't clear a captcha – go straight to VNC help
 
         # Automated login failed (captcha/2FA/repeated), notify and wait for the user to finish via VNC.
         if mfa_manual:
@@ -547,6 +569,17 @@ class EpicGamesClaimer(BaseClaimer):
             await self.page.evaluate(f"window.location.href = '{URL_LOGIN}'")
         except Exception:
             await self.page.get(URL_LOGIN)
+
+    async def _press_sign_in(self) -> bool:
+        """Send the sign-in form again, for when a human check interrupted one you had filled."""
+        button = await self.page.select("#sign-in", timeout=5) or await self.page.find("Sign in", timeout=4)
+        if not button:
+            logger.debug("No sign-in button came back after the check.")
+            return False
+        logger.info("Human check cleared, finishing the sign-in.")
+        await button.click()
+        await self.sleep(6)
+        return True
 
     async def _do_stealth_login(self) -> None:
         """Fill in email and password using browser-native methods.
@@ -822,7 +855,7 @@ class EpicGamesClaimer(BaseClaimer):
                 state = json.loads(raw) if isinstance(raw, str) else state
             except (json.JSONDecodeError, TypeError):
                 state = {"text": "", "flow": "unknown"}
-            if state.get("text"):
+            if state.get("text") or is_region_locked(state):
                 break
             await self.sleep(1)
         return state
@@ -847,6 +880,30 @@ class EpicGamesClaimer(BaseClaimer):
                 return True
         return False
 
+    async def _checkout_challenge_present(self) -> bool:
+        """A human check on the page, or inside the checkout frame where the page check cannot look."""
+        if await self._human_challenge_present():
+            return True
+        try:
+            frame_id = self._find_purchase_frame(await self.page.send(uc.cdp.page.get_frame_tree()))
+            if not frame_id:
+                return False
+            ctx_id = await self.page.send(
+                uc.cdp.page.create_isolated_world(frame_id=frame_id, grant_univeral_access=True)
+            )
+            return bool(await self._eval_in_frame(ctx_id, CHALLENGE_JS))
+        except Exception as exc:
+            logger.debug("Could not look for a human check in the checkout frame: %s", exc)
+            return False
+
+    async def _clear_checkout_challenge(self, title: str) -> bool:
+        """Hand a checkout captcha to you over VNC. True when there was none or it got solved."""
+        if not await self._checkout_challenge_present():
+            return True
+        logger.debug("Human check on the checkout for '%s'.", title)
+        return await self._wait_out_challenge("Epic", store_key=self.store_name,
+                                              present_fn=self._checkout_challenge_present)
+
     # Retry up to 2 times with exponential backoff if claiming fails
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=3, max=15), reraise=True)
     async def _claim_game(self, url: str) -> None:
@@ -856,7 +913,7 @@ class EpicGamesClaimer(BaseClaimer):
 
         async with async_session() as session:
             obj, created = await get_or_create(
-                session, store="epic", user=self.user or "unknown",
+                session, store=self.store_name, user=self.user or "unknown",
                 game_id=game_id, title=game_id, url=url, status="unknown",
             )
             # The page, not the database, decides: a row saying "claimed" can be stale
@@ -878,6 +935,21 @@ class EpicGamesClaimer(BaseClaimer):
             btn_text = state.get("text", "")
             flow_type = state.get("flow", "unknown")
             logger.debug("Page state for %s: button=%r flow=%s", game_id, btn_text, flow_type)
+
+            # The heading here is Epic's sentence, so the name comes from the database or the address.
+            if is_region_locked(state):
+                known = obj.title if obj.title and obj.title != game_id and not obj.title.endswith("region.") else ""
+                title = known or title_from_slug(game_id)
+                outcome = region_locked_status(obj.status)
+                if outcome:
+                    logger.info("'%s' is blocked in your region on Epic now, it stays in your library.", title)
+                    self.notify_games.append({"title": title, "url": url, "status": outcome})
+                else:
+                    logger.info("'%s' is not available in your region on Epic, skipping.", title)
+                    obj.status = "skipped:region"
+                obj.title = title
+                await session.commit()
+                return
 
             # ── Read title ──
             title = await self.page.evaluate(
@@ -968,24 +1040,27 @@ class EpicGamesClaimer(BaseClaimer):
                 logger.warning("Unknown checkout flow '%s' for '%s'.", flow_type, title)
                 checkout_ok = False
 
+            # Checking ownership leaves the page, which would drop an order still waiting on a captcha.
+            await self._clear_checkout_challenge(title)
+
             # The checkout page only says what it thinks happened, the library says what is true.
             if await self._confirm_in_library(url):
                 logger.info("✓ Claimed '%s' successfully!", title)
                 obj.status = "claimed"
                 obj.updated_at = datetime.now(timezone.utc)
                 notify_game["status"] = "claimed"
-            elif checkout_ok:
-                logger.warning("Claim of '%s' was not confirmed by the page, check it manually.", title)
-                obj.status = "failed:unconfirmed"
-                notify_game["status"] = "failed:unconfirmed"
-                await self.take_screenshot(f"epic_unconfirmed_{game_id}")
             else:
-                logger.error("Failed to claim '%s'.", title)
-                obj.status = "failed"
-                notify_game["status"] = "failed"
-                await self.take_screenshot(f"epic_failed_{game_id}")
-                if cfg.notify_claim_fails:
-                    await self.notify(f"epic-games: failed to claim {title}")
+                # The game is still free to take, so the summary says so instead of hiding a "failed".
+                if checkout_ok:
+                    logger.warning("Claim of '%s' was not confirmed by the page, claim it yourself: %s", title, url)
+                    obj.status = "failed:unconfirmed"
+                    await self.take_screenshot(f"epic_unconfirmed_{game_id}")
+                else:
+                    logger.error("Failed to claim '%s', claim it yourself: %s", title, url)
+                    obj.status = "failed"
+                    await self.take_screenshot(f"epic_failed_{game_id}")
+                notify_game["status"] = "notified"
+                needs_you(self.store_name)
 
             await session.commit()
 
@@ -1067,10 +1142,11 @@ class EpicGamesClaimer(BaseClaimer):
                 await self.sleep(2)
 
             # EULA / Terms acceptance (check before Add to library)
+            # Only Epic's licence box: the first checkbox can be "Share my email with <publisher>".
             await self.page.evaluate(
                 """
                 (() => {
-                    const cb = document.querySelector('input#agree, input[type="checkbox"]');
+                    const cb = document.querySelector('input#agree');
                     if (cb && !cb.checked) cb.click();
                 })()
                 """
@@ -1171,6 +1247,10 @@ class EpicGamesClaimer(BaseClaimer):
                         # We don't break immediately, let already_done or the timeout push us forward
                         pass
 
+                    # A captcha holds the order, and the page text below can read as success meanwhile (#61).
+                    if not await self._clear_checkout_challenge(title):
+                        return False
+
                     # Also check if it was already confirmed (fallback checking main page)
                     already_done = await self.page.evaluate(
                         """
@@ -1204,6 +1284,8 @@ class EpicGamesClaimer(BaseClaimer):
 
             # ── Step 4: Verify claim success ──
             for _ in range(15):
+                if not await self._clear_checkout_challenge(title):
+                    return False
                 success = await self.page.evaluate(
                     """
                     (() => {
