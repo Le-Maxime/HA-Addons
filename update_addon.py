@@ -202,6 +202,126 @@ def patch_fgc_notifier(fgc_dir):
         with open(notifier_path, 'w', encoding='utf-8', newline='\n') as f:
             f.write(new_content)
 
+def patch_fgc_missing_base(fgc_dir):
+    req_path = os.path.join(fgc_dir, 'requirements.txt')
+    if os.path.exists(req_path):
+        with open(req_path, 'r', encoding='utf-8') as f:
+            r_content = f.read()
+        if "nodriver" in r_content and "nodriver>=" not in r_content:
+            r_content = re.sub(r'nodriver[^\r\n]*', 'nodriver>=0.50.5', r_content)
+            with open(req_path, 'w', encoding='utf-8', newline='\n') as f:
+                f.write(r_content)
+
+    steam_path = os.path.join(fgc_dir, 'src', 'stores', 'steam.py')
+    if os.path.exists(steam_path):
+        with open(steam_path, 'r', encoding='utf-8') as f:
+            s_content = f.read()
+        if "from src.core.database import async_session, get_or_create, ClaimedGame" not in s_content:
+            s_content = s_content.replace(
+                "from src.core.database import async_session, get_or_create",
+                "from src.core.database import async_session, get_or_create, ClaimedGame\nfrom sqlalchemy import select"
+            )
+        if 'requires base game (already known from DB)' not in s_content:
+            target_pre = """        url = game.get("url", "")
+        title = game.get("title", "Unknown")
+        app_id = game.get("app_id", "")
+        source = game.get("source", "unknown")"""
+            repl_pre = """        url = game.get("url", "")
+        title = game.get("title", "Unknown")
+        app_id = game.get("app_id", "")
+        if not app_id and url:
+            app_id = self._extract_game_id(url)
+
+        if app_id:
+            async with async_session() as session:
+                stmt = select(ClaimedGame).where(
+                    ClaimedGame.store == "steam",
+                    ClaimedGame.game_id == str(app_id),
+                )
+                existing = (await session.execute(stmt)).scalars().first()
+                if existing:
+                    if existing.status in ("claimed", "existed"):
+                        logger.info("'%s' (%s) already in library (DB: %s), skipping.", title, app_id, existing.status)
+                        return
+                    if existing.status == "failed:missing_base":
+                        logger.info("'%s' (%s) requires base game (already known from DB), skipping.", title, app_id)
+                        return"""
+            if target_pre in s_content:
+                s_content = s_content.replace(target_pre, repl_pre)
+
+        if 'failed:missing_base' not in s_content or 'status="failed:missing_base"' not in s_content:
+            target_ensure = """        if not has_base_game:
+            logger.warning("Skipping DLC '%s' because required base game is missing.", page_title)
+            notify_game["status"] = "failed:missing_base"
+            return"""
+            repl_ensure = """        if not has_base_game:
+            logger.warning("Skipping DLC '%s' because required base game is missing.", page_title)
+            async with async_session() as session:
+                obj, _ = await get_or_create(
+                    session, store="steam", user=self.user or "unknown",
+                    game_id=app_id or self._extract_game_id(current_url) or page_title,
+                    title=page_title, url=current_url, status="failed:missing_base",
+                )
+                obj.status = "failed:missing_base"
+                await session.commit()
+            notify_game["status"] = "failed:missing_base"
+            return"""
+            if target_ensure in s_content:
+                s_content = s_content.replace(target_ensure, repl_ensure)
+        with open(steam_path, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(s_content)
+
+    epic_path = os.path.join(fgc_dir, 'src', 'stores', 'epic.py')
+    if os.path.exists(epic_path):
+        with open(epic_path, 'r', encoding='utf-8') as f:
+            e_content = f.read()
+        if 'failed:missing_base' not in e_content:
+            target_epic = """            # The page, not the database, decides: a row saying "claimed" can be stale
+            # or simply wrong, and skipping on it alone would hide the game forever.
+            if not created:"""
+            repl_epic = """            # The page, not the database, decides: a row saying "claimed" can be stale
+            # or simply wrong, and skipping on it alone would hide the game forever.
+            # But a missing base game cannot be acquired automatically, so avoid repeated checks.
+            if not created and obj.status == "failed:missing_base":
+                logger.info("'%s' requires base game (already known from DB), skipping.", obj.title or game_id)
+                return
+            if not created:"""
+            if target_epic in e_content:
+                e_content = e_content.replace(target_epic, repl_epic)
+                with open(epic_path, 'w', encoding='utf-8', newline='\n') as f:
+                    f.write(e_content)
+
+    gp_path = os.path.join(fgc_dir, 'src', 'stores', 'gamerpower.py')
+    if os.path.exists(gp_path):
+        with open(gp_path, 'r', encoding='utf-8') as f:
+            g_content = f.read()
+        if 'ClaimedGame.status.in_(["claimed", "existed", "failed:missing_base"])' not in g_content:
+            target_gp = 'ClaimedGame.status.in_(["claimed", "existed"])'
+            repl_gp = 'ClaimedGame.status.in_(["claimed", "existed", "failed:missing_base"])'
+            if target_gp in g_content:
+                g_content = g_content.replace(target_gp, repl_gp)
+                with open(gp_path, 'w', encoding='utf-8', newline='\n') as f:
+                    f.write(g_content)
+
+    cfg_path = os.path.join(fgc_dir, 'config.yaml')
+    if os.path.exists(cfg_path):
+        with open(cfg_path, 'r', encoding='utf-8') as f:
+            c_content = f.read()
+        changed = False
+        if "notify_missing_base:" not in c_content:
+            c_content = c_content.replace(
+                "options:\n",
+                "options:\n  notify_missing_base: false\n"
+            )
+            c_content = c_content.replace(
+                "schema:\n",
+                "schema:\n  notify_missing_base: bool?\n"
+            )
+            changed = True
+        if changed:
+            with open(cfg_path, 'w', encoding='utf-8', newline='\n') as f:
+                f.write(c_content)
+
 def update_free_games_claimer():
     print("\n--- Checking for Free Games Claimer Remaster updates ---")
     fgc_dir = os.path.join(script_dir, 'free_games_claimer')
@@ -235,10 +355,11 @@ def update_free_games_claimer():
             
     print(f"Current local version: {current_version}")
     
-    if current_version == target_version:
+    if current_version == target_version or (sha and sha in current_version):
         print("Free Games Claimer is up to date.")
         patch_fgc_notifier(fgc_dir)
-        update_root_readme_version('free_games_claimer', target_version)
+        patch_fgc_missing_base(fgc_dir)
+        update_root_readme_version('free_games_claimer', current_version)
         return
         
     print(f"Updating Free Games Claimer from {current_version} to {target_version}...")
@@ -293,6 +414,7 @@ def update_free_games_claimer():
                     f.write(custom_notifier_backup)
 
             patch_fgc_notifier(fgc_dir)
+            patch_fgc_missing_base(fgc_dir)
             shutil.rmtree(temp_dir)
             print("Successfully updated source files.")
     except Exception as e:

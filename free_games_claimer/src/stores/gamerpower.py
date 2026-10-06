@@ -407,7 +407,7 @@ async def _claimed_titles() -> set:
     """Every title already claimed anywhere, so the same game is not chased twice."""
     titles = set()
     async with async_session() as session:
-        stmt = select(ClaimedGame).where(ClaimedGame.status.in_(["claimed", "existed"]))
+        stmt = select(ClaimedGame).where(ClaimedGame.status.in_(["claimed", "existed", "failed:missing_base"]))
         result = await session.execute(stmt)
         for db_game in result.scalars().all():
             titles.add(BaseClaimer._normalize_title(db_game.title))

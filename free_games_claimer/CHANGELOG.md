@@ -1,10 +1,11 @@
 # Changelog
 
+## v1.1.20261004-89f510e-1
 
-
-
-
-
+- Fix nodriver syntax crash by requiring `nodriver>=0.50.5`.
+- Persist `failed:missing_base` status in SQLite database for DLCs requiring an unowned base game (Steam, Epic, GamerPower).
+- Added pre-checks to skip DLCs with missing base game without opening browser tabs or re-attempting every run.
+- Added `notify_missing_base` configuration option in add-on options (default: `false`) to stop notification spam.
 
 ## v1.1.20261004-89f510e
 

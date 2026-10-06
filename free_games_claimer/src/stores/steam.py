@@ -7,11 +7,12 @@ import logging
 import re
 
 import nodriver as uc
+from sqlalchemy import select
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from src.core.claimer import BaseClaimer, now_str, filenamify
 from src.core.config import cfg
-from src.core.database import async_session, get_or_create
+from src.core.database import async_session, get_or_create, ClaimedGame
 from src.core.url_security import url_has_allowed_host
 
 logger = logging.getLogger("fgc.steam")
@@ -559,7 +560,23 @@ class SteamClaimer(BaseClaimer):
         url = game.get("url", "")
         title = game.get("title", "Unknown")
         app_id = game.get("app_id", "")
-        source = game.get("source", "unknown")
+        if not app_id and url:
+            app_id = self._extract_game_id(url)
+
+        if app_id:
+            async with async_session() as session:
+                stmt = select(ClaimedGame).where(
+                    ClaimedGame.store == "steam",
+                    ClaimedGame.game_id == str(app_id),
+                )
+                existing = (await session.execute(stmt)).scalars().first()
+                if existing:
+                    if existing.status in ("claimed", "existed"):
+                        logger.info("'%s' (%s) already in library (DB: %s), skipping.", title, app_id, existing.status)
+                        return
+                    if existing.status == "failed:missing_base":
+                        logger.info("'%s' (%s) requires base game (already known from DB), skipping.", title, app_id)
+                        return
 
         try:
             await self.page.get(url)
@@ -614,6 +631,14 @@ class SteamClaimer(BaseClaimer):
         has_base_game = await self._ensure_base_game(current_url)
         if not has_base_game:
             logger.warning("Skipping DLC '%s' because required base game is missing.", page_title)
+            async with async_session() as session:
+                obj, _ = await get_or_create(
+                    session, store="steam", user=self.user or "unknown",
+                    game_id=app_id or self._extract_game_id(current_url) or page_title,
+                    title=page_title, url=current_url, status="failed:missing_base",
+                )
+                obj.status = "failed:missing_base"
+                await session.commit()
             notify_game["status"] = "failed:missing_base"
             return
 

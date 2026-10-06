@@ -1,5 +1,5 @@
 # Core browser automation
-nodriver>=0.50.3
+nodriver>=0.50.5
 
 # Process cleanup (kill orphaned Chrome process trees)
 psutil>=7.2.2

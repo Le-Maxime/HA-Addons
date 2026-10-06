@@ -918,6 +918,10 @@ class EpicGamesClaimer(BaseClaimer):
             )
             # The page, not the database, decides: a row saying "claimed" can be stale
             # or simply wrong, and skipping on it alone would hide the game forever.
+            # But a missing base game cannot be acquired automatically, so avoid repeated checks.
+            if not created and obj.status == "failed:missing_base":
+                logger.info("'%s' requires base game (already known from DB), skipping.", obj.title or game_id)
+                return
             if not created:
                 logger.debug("DB says '%s' is '%s', verifying on the store page anyway", game_id, obj.status)
 

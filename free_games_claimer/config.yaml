@@ -1,6 +1,6 @@
 name: "Free Games Claimer Remaster"
 description: "Automatically claims free weekly/monthly games from Epic Games Store, Prime Gaming, GOG, and Steam."
-version: "v1.1.20261004-89f510e"
+version: "v1.1.20261004-89f510e-1"
 slug: "free_games_claimer"
 init: false
 arch:
@@ -24,6 +24,7 @@ options:
   notify_summary: true
   notify_errors: true
   notify_claim_fails: true
+  notify_missing_base: false
   notify_login_request: true
   email: ""
   password: ""
@@ -72,6 +73,7 @@ schema:
   notify_summary: bool
   notify_errors: bool
   notify_claim_fails: bool
+  notify_missing_base: bool?
   notify_login_request: bool
   email: str?
   password: password?
