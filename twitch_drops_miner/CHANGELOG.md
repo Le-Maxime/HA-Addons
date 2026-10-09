@@ -20,6 +20,21 @@
 
 
 
+
+## v16.dev.df62972
+
+Updated Twitch Drops Miner to v16.dev.df62972
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/df62972bd77c2441913ab8190ee5ea16e0bbbb2b
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@378697a3f35380e87b62b1e6059e18f6669a98b1: Fix an issue with a drop real time update delta of zero not restarting the timer
+- fireph/TwitchDropsMiner@f693b0ca41301ac2282f3978713479efebe0490e: Change the mining method to playlist HEAD requests
+- fireph/TwitchDropsMiner@df62972bd77c2441913ab8190ee5ea16e0bbbb2b: Merge remote-tracking branch 'upstream/master' into webui
+
 ## v16.dev.1070607
 
 Updated Twitch Drops Miner to v16.dev.1070607
@@ -308,6 +323,21 @@ Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
 
 
 
+
+
+## v16.dev.df62972
+
+Updated Twitch Drops Miner to v16.dev.df62972
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/df62972bd77c2441913ab8190ee5ea16e0bbbb2b
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@378697a3f35380e87b62b1e6059e18f6669a98b1: Fix an issue with a drop real time update delta of zero not restarting the timer
+- fireph/TwitchDropsMiner@f693b0ca41301ac2282f3978713479efebe0490e: Change the mining method to playlist HEAD requests
+- fireph/TwitchDropsMiner@df62972bd77c2441913ab8190ee5ea16e0bbbb2b: Merge remote-tracking branch 'upstream/master' into webui
 
 ## v16.dev.1070607
 
