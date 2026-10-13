@@ -21,6 +21,19 @@
 
 
 
+
+## v16.dev.7c32057
+
+Updated Twitch Drops Miner to v16.dev.7c32057
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/7c320578ffe39e4a59a1283075ef261920f595fd
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@7c320578ffe39e4a59a1283075ef261920f595fd: fix password login to work correctly with special characters
+
 ## v16.dev.df62972
 
 Updated Twitch Drops Miner to v16.dev.df62972
@@ -324,6 +337,19 @@ Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
 
 
 
+
+
+## v16.dev.7c32057
+
+Updated Twitch Drops Miner to v16.dev.7c32057
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/7c320578ffe39e4a59a1283075ef261920f595fd
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@7c320578ffe39e4a59a1283075ef261920f595fd: fix password login to work correctly with special characters
 
 ## v16.dev.df62972
 
