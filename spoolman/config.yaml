@@ -2,7 +2,7 @@ name: "Spoolman"
 description: "Keep track of your 3D printer filament spools (v0.27.0)"
 version: "0.27.0"
 slug: "spoolman"
-image: "ghcr.io/darkassassinua/{arch}-addon-spoolman"
+image: "ghcr.io/le-maxime/{arch}-addon-spoolman"
 url: "https://github.com/Donkie/Spoolman"
 arch:
   - aarch64

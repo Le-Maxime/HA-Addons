@@ -2,7 +2,7 @@ name: "Free Games Claimer Remaster"
 description: "Automatically claims free weekly/monthly games from Epic Games Store, Prime Gaming, GOG, and Steam."
 version: "v1.1.20261004-89f510e-2"
 slug: "free_games_claimer"
-image: "ghcr.io/darkassassinua/{arch}-addon-free_games_claimer"
+image: "ghcr.io/le-maxime/{arch}-addon-free_games_claimer"
 init: false
 arch:
   - amd64
