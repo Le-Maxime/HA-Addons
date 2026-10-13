@@ -340,6 +340,9 @@ class BaseClaimer:
             "--no-first-run",
             "--password-store=basic",
             "--use-mock-keychain",
+            "--disk-cache-dir=/tmp/cache",
+            "--disk-cache-size=1",
+            "--media-cache-size=1",
         ]
         # Only disable GPU when running headless (non-Epic).
         # For headful mode (Epic), GPU must stay enabled so that WebGL reports

@@ -28,6 +28,10 @@ if [ -d "/config" ]; then
     mkdir -p /config/browser /config/screenshots
     rm -rf /fgc/data
     ln -s /config /fgc/data
+
+    # Clean transient browser cache from persistent storage to keep HA backups compact
+    echo "Purging transient browser cache from persistent storage..."
+    find /config/browser -type d \( -name "Cache" -o -name "Code Cache" -o -name "GPUCache" -o -name "DawnCache" -o -name "DawnGraphiteCache" -o -name "DawnWebGPUCache" -o -name "CacheStorage" -o -name "ScriptCache" \) -exec rm -rf {} + 2>/dev/null || true
 fi
 
 

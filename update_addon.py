@@ -322,6 +322,22 @@ def patch_fgc_missing_base(fgc_dir):
             with open(cfg_path, 'w', encoding='utf-8', newline='\n') as f:
                 f.write(c_content)
 
+def patch_fgc_cache(fgc_dir):
+    claimer_path = os.path.join(fgc_dir, 'src', 'core', 'claimer.py')
+    if not os.path.exists(claimer_path):
+        return
+    with open(claimer_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    if "--disk-cache-dir=/tmp/cache" in content:
+        return
+    target = '"--use-mock-keychain",\n        ]'
+    replacement = '"--use-mock-keychain",\n            "--disk-cache-dir=/tmp/cache",\n            "--disk-cache-size=1",\n            "--media-cache-size=1",\n        ]'
+    if target in content:
+        content = content.replace(target, replacement)
+        with open(claimer_path, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(content)
+        print("Patched claimer.py to redirect cache to /tmp/cache")
+
 def update_free_games_claimer():
     print("\n--- Checking for Free Games Claimer Remaster updates ---")
     fgc_dir = os.path.join(script_dir, 'free_games_claimer')
@@ -359,6 +375,7 @@ def update_free_games_claimer():
         print("Free Games Claimer is up to date.")
         patch_fgc_notifier(fgc_dir)
         patch_fgc_missing_base(fgc_dir)
+        patch_fgc_cache(fgc_dir)
         update_root_readme_version('free_games_claimer', current_version)
         return
         
@@ -415,6 +432,7 @@ def update_free_games_claimer():
 
             patch_fgc_notifier(fgc_dir)
             patch_fgc_missing_base(fgc_dir)
+            patch_fgc_cache(fgc_dir)
             shutil.rmtree(temp_dir)
             print("Successfully updated source files.")
     except Exception as e:
