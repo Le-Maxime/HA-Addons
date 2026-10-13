@@ -60,6 +60,9 @@ async def send_discord(
     async with httpx.AsyncClient(timeout=30) as client:
         for i, chunk in enumerate(chunks):
             data = {"content": chunk, "username": username}
+            if cfg.discord_suppress_embeds:
+                # Discord's "suppress embeds" flag: links stay links, without preview cards (PR #81).
+                data["flags"] = 4
             # Attach the screenshot only to the first chunk
             if i == 0 and screenshot_path and screenshot_path.exists():
                 files = {"file": (screenshot_path.name, screenshot_path.read_bytes(), "image/png")}
@@ -92,7 +95,7 @@ def markdown_ready(notify_url: str) -> list:
     return ready
 
 
-async def send_apprise(message: str, *, title: str | None = None) -> None:
+async def send_apprise(message: str, *, title: str | None = None, attach: Path | None = None) -> None:
     """Send a notification via any Apprise-supported service."""
     notify_url = cfg.notify_url
     if not notify_url:
@@ -109,7 +112,7 @@ async def send_apprise(message: str, *, title: str | None = None) -> None:
         None,
         # The message is written in markdown; Apprise turns it into whatever each service wants.
         lambda: ap.notify(body=message, title=title or "Free Games Claimer",
-                          body_format=apprise.NotifyFormat.MARKDOWN),
+                          body_format=apprise.NotifyFormat.MARKDOWN, attach=str(attach) if attach else None),
     )
     # debug, not info: apprise already logs each target, avoids a duplicate-looking line.
     logger.debug("Apprise notification sent.")
@@ -127,21 +130,15 @@ async def notify(
     if cfg.discord_webhook:
         tasks.append(send_discord(message, screenshot_path=screenshot_path))
     if cfg.notify_url:
-        try:
-            from src.core.custom_notifier import custom_notify
-            async def _send_custom():
-                handled = await custom_notify(message, screenshot_path=screenshot_path, title=title)
-                if not handled:
-                    await send_apprise(message, title=title)
-            tasks.append(_send_custom())
-        except Exception:
-            tasks.append(send_apprise(message, title=title))
+        tasks.append(send_apprise(message, title=title, attach=screenshot_path))
 
     if not tasks:
         logger.debug("No notification service configured.")
         return
 
-    logger.debug("Dispatching notification to %d service(s): %s", len(tasks), message[:200])
+    # Only the first line: the rest can hold game codes, and the log ends up in bug reports.
+    logger.debug("Dispatching notification to %d service(s): %s (%d chars)",
+                 len(tasks), message.split("\n", 1)[0][:120], len(message))
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for result in results:
         if isinstance(result, Exception):

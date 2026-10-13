@@ -1,5 +1,10 @@
 # Changelog
 
+
+## v1.1.20261013-88b6cda
+
+Upstream update: v1.14: Steam without SteamDB (GamerPower first, then Steam's own search), DLC per store, Steam search switch, GamerPower remembers its links, sequels no longer taken for owned games, Discord without link previews, failure screenshots in notifications, issue labels and digest
+
 ## v1.1.20261004-89f510e-1
 
 - Fix nodriver syntax crash by requiring `nodriver>=0.50.5`.

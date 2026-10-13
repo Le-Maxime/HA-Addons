@@ -196,6 +196,8 @@ class Config:
     debug: bool = _bool("DEBUG", default=True)
     # Internals of third-party libraries (CDP frames, HTTP handshakes, SQL). Separate from DEBUG.
     debug_libs: bool = _bool("DEBUG_LIBS", default=False)
+    # A failure screenshot can show an account name, an e-mail or a code, so it is sent only when asked.
+    debug_screenshots: bool = _bool("DEBUG_SCREENSHOTS")
     dryrun: bool = _bool("DRYRUN")
     show: bool = _bool("SHOW", default=True)
     width: int = _int("WIDTH", 1280)
@@ -219,6 +221,12 @@ class Config:
 
     scheduler_hours: int = _int("SCHEDULER_HOURS", 12)
     scheduler_timezone: str = os.getenv("SCHEDULER_TIMEZONE", "UTC").strip() or "UTC"
+    # The browser's own time zone: "auto" asks where your IP is, "off" keeps UTC, or an IANA name such as Europe/Warsaw.
+    browser_timezone: str = (os.getenv("BROWSER_TIMEZONE") or "auto").strip()
+    # How often "auto" asks again: run, week or month. A zone you name, off, or TZ asks nothing at all.
+    browser_timezone_refresh: str = (os.getenv("BROWSER_TIMEZONE_REFRESH") or "month").strip().lower()
+    # The container's own TZ, read once here: the browser zone code sets TZ for a moment while Chrome starts.
+    tz: str | None = os.getenv("TZ") or None
     scheduler_fixed_times: str = os.getenv("SCHEDULER_FIXED_TIMES", "")
     run_on_startup: bool = _bool("RUN_ON_STARTUP", default=True)
     # One pass, then the container stops, for people who schedule it from outside (cron, Ofelia).
@@ -240,6 +248,7 @@ class Config:
 
     # --- Notifications ---
     discord_webhook: str | None = os.getenv("DISCORD_WEBHOOK")
+    discord_suppress_embeds: bool = _bool("DISCORD_SUPPRESS_EMBEDS", default=True)
     notify_url: str | None = os.getenv("NOTIFY")  # apprise URL fallback
     notify_summary: bool = _bool("NOTIFY_SUMMARY", default=True)
     notify_errors: bool = _bool("NOTIFY_ERRORS", default=True)
@@ -269,6 +278,8 @@ class Config:
     # Epic's weekly mobile giveaways (claimed on the same store pages as the PC games).
     eg_mobile: bool = _bool("EG_MOBILE", default=True)
     eg_mobile_platforms: str = os.getenv("EG_MOBILE_PLATFORMS", "android,ios")
+    # DLC giveaways GamerPower finds for Epic.
+    eg_claim_dlc: bool = _bool("EG_CLAIM_DLC", default=True)
 
     @property
     def eg_mobile_platform_list(self) -> list[str]:
@@ -281,6 +292,9 @@ class Config:
     pg_password: str | None = os.getenv("PG_PASSWORD") or os.getenv("PASSWORD")
     pg_otp_key: str | None = _secret("PG_OTP_KEY", "PG_OTPKEY")
     pg_force_check_collected: bool = _bool("PG_FORCE_CHECK_COLLECTED")
+    # Legacy Games account that Prime's Legacy Games codes are redeemed into.
+    lg_email: str | None = os.getenv("LG_EMAIL")
+    lg_password: str | None = _secret("LG_PASSWORD")
 
     # --- GOG ---
     gog_email: str | None = os.getenv("GOG_EMAIL") or os.getenv("EMAIL")
@@ -295,10 +309,16 @@ class Config:
     ms_password: str | None = os.getenv("MS_PASSWORD") or os.getenv("PASSWORD")
     ms_otp_key: str | None = _secret("MS_OTP_KEY")
     ms_force_redeem: bool = _bool("MS_FORCE_REDEEM")
+    # DLC giveaways GamerPower finds for Xbox.
+    ms_claim_dlc: bool = _bool("MS_CLAIM_DLC", default=True)
 
     # --- Steam ---
     steam_username: str | None = os.getenv("STEAM_USERNAME")
     steam_password: str | None = os.getenv("STEAM_PASSWORD") or os.getenv("PASSWORD")
+    # DLC from GamerPower and from Steam's own search.
+    steam_claim_dlc: bool = _bool("STEAM_CLAIM_DLC", default=True)
+    # Off leaves Steam to GamerPower's finds, a safety switch should Steam mind the search.
+    steam_search: bool = _bool("STEAM_SEARCH", default=True)
 
     # --- Unity Asset Store ---
     unity_email: str | None = os.getenv("UNITY_EMAIL") or os.getenv("EMAIL")
@@ -315,16 +335,15 @@ class Config:
     ubi_password: str | None = os.getenv("UBI_PASSWORD") or os.getenv("PASSWORD")
     ubi_otp_key: str | None = _secret("UBI_OTP_KEY", "UBI_OTPKEY")
 
-    # --- GamerPower ---
-    # Most giveaways are in-game DLC needing a per-game account, so they are skipped by default.
-    gp_claim_dlc: bool = _bool("GP_CLAIM_DLC", default=False)
-
     # --- GamerPower & Fanatical ---
     # Some GamerPower giveaways redirect to Fanatical.com,
     # which requires a Fanatical account + Steam account connection.
     # Switched on by naming it in STORES, like every side store.
     fanatical_email: str | None = os.getenv("FANATICAL_EMAIL") or os.getenv("EMAIL")
     fanatical_password: str | None = os.getenv("FANATICAL_PASSWORD") or os.getenv("PASSWORD")
+    fanatical_otp_key: str | None = _secret("FANATICAL_OTP_KEY")
+    # Keep the newsletter a claim signed you up for (false = unsubscribe, like GOG_NEWSLETTER).
+    fanatical_newsletter: bool = _bool("FANATICAL_NEWSLETTER")
 
     # --- Itch.io ---
     itchio_email: str | None = os.getenv("ITCHIO_EMAIL") or os.getenv("EMAIL")
