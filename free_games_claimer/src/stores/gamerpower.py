@@ -650,7 +650,7 @@ def counts_as_done(store: str, status: str) -> bool:
     """True for a row whose game needs nothing more: claimed or existed, also once Steam took a Fanatical key."""
     status = str(status or "")
     # Steam writes its key outcome over a Fanatical row ("claimed and activated", "failed:key-region").
-    return status == "existed" or status.startswith("claimed") or str(store or "") == "fanatical"
+    return status in ("existed", "failed:missing_base") or status.startswith("claimed") or str(store or "") == "fanatical"
 
 
 async def _claimed_titles() -> set:

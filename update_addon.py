@@ -295,13 +295,17 @@ def patch_fgc_missing_base(fgc_dir):
     if os.path.exists(gp_path):
         with open(gp_path, 'r', encoding='utf-8') as f:
             g_content = f.read()
-        if 'ClaimedGame.status.in_(["claimed", "existed", "failed:missing_base"])' not in g_content:
+        if 'failed:missing_base' not in g_content:
             target_gp = 'ClaimedGame.status.in_(["claimed", "existed"])'
             repl_gp = 'ClaimedGame.status.in_(["claimed", "existed", "failed:missing_base"])'
             if target_gp in g_content:
                 g_content = g_content.replace(target_gp, repl_gp)
-                with open(gp_path, 'w', encoding='utf-8', newline='\n') as f:
-                    f.write(g_content)
+            target_done = 'return status == "existed" or status.startswith("claimed") or str(store or "") == "fanatical"'
+            repl_done = 'return status in ("existed", "failed:missing_base") or status.startswith("claimed") or str(store or "") == "fanatical"'
+            if target_done in g_content:
+                g_content = g_content.replace(target_done, repl_done)
+            with open(gp_path, 'w', encoding='utf-8', newline='\n') as f:
+                f.write(g_content)
 
     cfg_path = os.path.join(fgc_dir, 'config.yaml')
     if os.path.exists(cfg_path):

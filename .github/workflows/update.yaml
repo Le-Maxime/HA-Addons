@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write     # Разрешение на запись для коммита и пуша изменений
+    outputs:
+      committed: ${{ steps.commit_step.outputs.committed }}
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
@@ -20,6 +22,7 @@ jobs:
         run: python update_addon.py
 
       - name: Commit and push changes
+        id: commit_step
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -28,6 +31,16 @@ jobs:
             git add -A
             git commit -m "Bump addon version due to Docker image update"
             git push
+            echo "committed=true" >> "$GITHUB_OUTPUT"
           else
             echo "No changes to commit"
+            echo "committed=false" >> "$GITHUB_OUTPUT"
           fi
+
+  call-build:
+    needs: check-update
+    if: needs.check-update.outputs.committed == 'true'
+    uses: ./.github/workflows/build.yaml
+    permissions:
+      contents: read
+      packages: write
