@@ -249,6 +249,17 @@ def patch_fgc_missing_base(fgc_dir):
             if target_pre in s_content:
                 s_content = s_content.replace(target_pre, repl_pre)
 
+        if "def _extract_game_id" not in s_content:
+            target_claim = "    async def _claim_game(self, game: dict) -> None:"
+            repl_claim = """    @staticmethod
+    def _extract_game_id(url: str) -> str | None:
+        m = STEAM_ITEM.search(url or "")
+        return m.group(2) if m else None
+
+    async def _claim_game(self, game: dict) -> None:"""
+            if target_claim in s_content:
+                s_content = s_content.replace(target_claim, repl_claim)
+
         if 'failed:missing_base' not in s_content or 'status="failed:missing_base"' not in s_content:
             target_ensure = """        if not has_base_game:
             logger.warning("Skipping DLC '%s' because required base game is missing.", page_title)

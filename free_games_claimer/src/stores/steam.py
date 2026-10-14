@@ -556,6 +556,11 @@ class SteamClaimer(BaseClaimer):
     # Claim a game
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _extract_game_id(url: str) -> str | None:
+        m = STEAM_ITEM.search(url or "")
+        return m.group(2) if m else None
+
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=3, max=15), reraise=True)
     async def _claim_game(self, game: dict) -> None:
         """Claim a single free game on Steam."""
@@ -563,7 +568,7 @@ class SteamClaimer(BaseClaimer):
         title = game.get("title", "Unknown")
         app_id = game.get("app_id", "")
         if not app_id and url:
-            app_id = self._extract_game_id(url)
+            app_id = self._extract_game_id(url) or ""
 
         if app_id:
             async with async_session() as session:
