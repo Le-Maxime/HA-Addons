@@ -250,15 +250,24 @@ def patch_fgc_missing_base(fgc_dir):
                 s_content = s_content.replace(target_pre, repl_pre)
 
         if "def _extract_game_id" not in s_content:
-            target_claim = "    async def _claim_game(self, game: dict) -> None:"
-            repl_claim = """    @staticmethod
-    def _extract_game_id(url: str) -> str | None:
+            target_claim = "    @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=3, max=15), reraise=True)\n    async def _claim_game(self, game: dict) -> None:"
+            repl_claim = """    def _extract_game_id(self, url: str) -> str | None:
+        m = STEAM_ITEM.search(url or "")
+        return m.group(2) if m else None
+
+    @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=3, max=15), reraise=True)
+    async def _claim_game(self, game: dict) -> None:"""
+            if target_claim in s_content:
+                s_content = s_content.replace(target_claim, repl_claim)
+            else:
+                target_fallback = "    async def _claim_game(self, game: dict) -> None:"
+                repl_fallback = """    def _extract_game_id(self, url: str) -> str | None:
         m = STEAM_ITEM.search(url or "")
         return m.group(2) if m else None
 
     async def _claim_game(self, game: dict) -> None:"""
-            if target_claim in s_content:
-                s_content = s_content.replace(target_claim, repl_claim)
+                if target_fallback in s_content:
+                    s_content = s_content.replace(target_fallback, repl_fallback)
 
         if 'failed:missing_base' not in s_content or 'status="failed:missing_base"' not in s_content:
             target_ensure = """        if not has_base_game:

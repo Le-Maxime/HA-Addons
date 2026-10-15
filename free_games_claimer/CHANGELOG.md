@@ -1,6 +1,8 @@
 # Changelog
 
+## v1.1.20261014-db17a13-1
 
+- Fix `SteamClaimer._extract_game_id` method signature and decorator placement to prevent `TypeError`.
 
 ## v1.1.20261014-db17a13
 
