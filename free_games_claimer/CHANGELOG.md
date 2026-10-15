@@ -1,6 +1,11 @@
 # Changelog
 
 
+
+## v1.1.20261014-db17a13
+
+Upstream update: v1.15: Epic opens games from their tiles and rechecks owned ones every three days, Cloudflare check on Epic pages handled, secrets and game codes masked in the log, games kept under your sign-in name, Fab and Fanatical order only at zero, debug screenshots only for failures, issue forms and labelling fix
+
 ## v1.1.20261013-88b6cda
 
 Upstream update: v1.14: Steam without SteamDB (GamerPower first, then Steam's own search), DLC per store, Steam search switch, GamerPower remembers its links, sequels no longer taken for owned games, Discord without link previews, failure screenshots in notifications, issue labels and digest

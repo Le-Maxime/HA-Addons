@@ -16,6 +16,7 @@ import nodriver as uc
 from sqlalchemy import select
 
 from src.core.claimer import BaseClaimer, OTP_KEY_ATTEMPTS, mask_account
+from src.core.redact import hide_account
 from src.core.config import cfg
 from src.core.database import async_session, ClaimedGame, get_or_create
 from src.core.run_state import needs_you, waits_for_nobody
@@ -936,6 +937,7 @@ class GamerPowerClaimer(BaseClaimer):
     def _log_side_signed_in(self, label: str, account: str | None) -> None:
         """The line every store prints. `log_signed_in()` would also overwrite `self.user`,
         which this claimer keeps as the database key for all its side stores."""
+        hide_account(account)
         self.logger.info("🔓 [bold green]Signed in as:[/bold green] %s (%s)",
                          mask_account(account) or "unknown", label)
 
@@ -1212,9 +1214,7 @@ class GamerPowerClaimer(BaseClaimer):
             return ""
         data = answer.get("data")
         key = steam_key_in(data)
-        # Fanatical's error text may quote the account, so its e-mail is masked like every other one in the log.
         detail = answer.get("reason") or answer.get("error") or ""
-        detail = re.sub(r"([A-Za-z0-9._%+-])[A-Za-z0-9._%+-]*@", r"\1***@", detail)
         logger.debug("[Fanatical] Key reveal for '%s' answered %s %s, Steam key found: %s",
                      title, answer.get("status"), detail[:120], bool(key))
         if answer.get("reason") == "email-unconfirmed":
@@ -1350,7 +1350,8 @@ class GamerPowerClaimer(BaseClaimer):
                 free_seen = True
             if not free_seen or paid:
                 continue
-            if state.get("pay") and not state.get("payDisabled"):
+            # Paying needs this very read to show the total as zero, an earlier read is not enough.
+            if state.get("pay") and not state.get("payDisabled") and state.get("total") is not None:
                 paid = moved = await self._fanatical_click(FAN_MARK_PAY_JS, state["pay"])
             elif state.get("proceed"):
                 moved = await self._fanatical_click(FAN_MARK_PROCEED_JS, "Proceed to checkout") or moved
@@ -1662,7 +1663,7 @@ class GamerPowerClaimer(BaseClaimer):
                 else:
                     logger.info("✓ [Fanatical] Claimed '%s', the key is in your Fanatical library.", title)
                     notify_game["status"] = "claimed, key in your Fanatical library 🔑"
-                await self.take_screenshot(f"fanatical_{filenamify(title)}")
+                await self.take_screenshot(f"fanatical_{filenamify(title)}", failed=False)
             else:
                 logger.warning("[Fanatical] '%s' was not confirmed as claimed (checkout: %s).", title, outcome)
                 notify_game["status"] = "failed:unconfirmed" if outcome == "receipt" else "failed:checkout"
@@ -1866,7 +1867,7 @@ class GamerPowerClaimer(BaseClaimer):
                 logger.info("✓ [Itch.io] Claimed '%s'!", title)
                 await self._remember_itchio(game_id, title, url, "claimed")
                 notify_game["status"] = "claimed"
-                await self.take_screenshot(f"itchio_{filenamify(title)}")
+                await self.take_screenshot(f"itchio_{filenamify(title)}", failed=False)
             elif walked == "download-only":
                 # Plenty of itch.io giveaways are a file and nothing else: no control puts
                 # them on the account, so this is not a failed claim, it is all there is.
@@ -2042,7 +2043,7 @@ class GamerPowerClaimer(BaseClaimer):
                 logger.info("✓ [IndieGala] Claimed '%s'!", title)
                 await self._remember_indiegala(game_id, title, url, "claimed")
                 notify_game["status"] = "claimed"
-                await self.take_screenshot(f"indiegala_{filenamify(title)}")
+                await self.take_screenshot(f"indiegala_{filenamify(title)}", failed=False)
             else:
                 logger.warning("[IndieGala] '%s' is not in your library after the click.", title)
                 notify_game["status"] = "failed:unconfirmed"

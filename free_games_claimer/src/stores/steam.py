@@ -9,7 +9,7 @@ import re
 
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from src.core.claimer import BaseClaimer, filenamify, track_missing_base
+from src.core.claimer import BaseClaimer, account_key, filenamify, track_missing_base
 from src.core.config import cfg
 from src.core.database import async_session, get_or_create, ClaimedGame
 from sqlalchemy import select
@@ -556,19 +556,19 @@ class SteamClaimer(BaseClaimer):
     # Claim a game
     # ------------------------------------------------------------------
 
+    @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=3, max=15), reraise=True)
     @staticmethod
     def _extract_game_id(url: str) -> str | None:
         m = STEAM_ITEM.search(url or "")
         return m.group(2) if m else None
 
-    @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=3, max=15), reraise=True)
     async def _claim_game(self, game: dict) -> None:
         """Claim a single free game on Steam."""
         url = game.get("url", "")
         title = game.get("title", "Unknown")
         app_id = game.get("app_id", "")
         if not app_id and url:
-            app_id = self._extract_game_id(url) or ""
+            app_id = self._extract_game_id(url)
 
         if app_id:
             async with async_session() as session:
@@ -603,7 +603,7 @@ class SteamClaimer(BaseClaimer):
             logger.info("⏭️ GamerPower redirect didn't land on Steam store: %s, skipping", current_url)
             async with async_session() as session:
                 await get_or_create(
-                    session, store="steam", user=self.user or "unknown",
+                    session, store="steam", user=account_key(cfg.steam_username, self.user),
                     game_id=game.get("giveaway_url", url), title=title,
                     url=current_url, status="not_steam",
                 )
@@ -648,7 +648,7 @@ class SteamClaimer(BaseClaimer):
             logger.info("'%s' already in library.", page_title)
             async with async_session() as session:
                 obj, _ = await get_or_create(
-                    session, store="steam", user=self.user or "unknown",
+                    session, store="steam", user=account_key(cfg.steam_username, self.user),
                     game_id=app_id, title=page_title, url=current_url, status="existed",
                 )
                 obj.status = "existed"
@@ -706,7 +706,7 @@ class SteamClaimer(BaseClaimer):
             logger.info("'%s' is Free-to-Play with no claim button. Skipping.", page_title)
             async with async_session() as session:
                 obj, _ = await get_or_create(
-                    session, store="steam", user=self.user or "unknown",
+                    session, store="steam", user=account_key(cfg.steam_username, self.user),
                     game_id=app_id, title=page_title, url=current_url, status="free_to_play",
                 )
                 obj.status = "free_to_play"
@@ -780,7 +780,7 @@ class SteamClaimer(BaseClaimer):
             logger.warning("⚠️ SKIPPING '%s': item is NOT free (price: %s). "
                            "Will not purchase paid content.", page_title, paid_price)
             notify_game["status"] = "skipped:paid"
-            await self.take_screenshot(f"steam_paid_skip_{filenamify(page_title)}")
+            await self.take_screenshot(f"steam_paid_skip_{filenamify(page_title)}", failed=False)
             return
 
         if price_info and not price_info.get("giveaway"):
@@ -794,7 +794,7 @@ class SteamClaimer(BaseClaimer):
             # Kept in the database so the summary tells you once, not every run (#78).
             async with async_session() as session:
                 obj, _ = await get_or_create(
-                    session, store="steam", user=self.user or "unknown",
+                    session, store="steam", user=account_key(cfg.steam_username, self.user),
                     game_id=app_id, title=page_title, url=current_url, status="failed:missing_base",
                 )
                 notify_game["status"] = track_missing_base(obj, remember=not cfg.dryrun)
@@ -926,14 +926,14 @@ class SteamClaimer(BaseClaimer):
 
         async with async_session() as session:
             obj, _ = await get_or_create(
-                session, store="steam", user=self.user or "unknown",
+                session, store="steam", user=account_key(cfg.steam_username, self.user),
                 game_id=app_id, title=page_title, url=current_url, status="claimed",
             )
             obj.status = "claimed"
             await session.commit()
             
         notify_game["status"] = "claimed"
-        await self.take_screenshot(f"steam_{filenamify(page_title)}")
+        await self.take_screenshot(f"steam_{filenamify(page_title)}", failed=False)
 
     # ------------------------------------------------------------------
     # Base game check (DLC)
