@@ -1,5 +1,10 @@
 # Changelog
 
+
+## v1.1.20261016-611f565
+
+Upstream update: v1.16: Epic claims through its new checkout frame again, failed claims retried instead of handed to you, Needed you says why and what is left, summary sent without games, long summaries split for Telegram, AliExpress streak after a missed day, mistyped authenticator key no longer stops the sign-in
+
 ## v1.1.20261014-db17a13-1
 
 - Fix `SteamClaimer._extract_game_id` method signature and decorator placement to prevent `TypeError`.

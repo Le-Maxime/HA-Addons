@@ -8,6 +8,7 @@ If a variable is not set, sensible defaults are used (e.g. screen size 1280x720)
 Store-specific credentials (like EG_EMAIL) take priority over default ones (EMAIL).
 """
 
+import base64
 import os
 import re
 from pathlib import Path
@@ -37,6 +38,17 @@ def _bool(key: str, default: bool = False, legacy: str = "") -> bool:
 def _secret(key: str, legacy: str = "") -> str | None:
     """Read a setting, falling back to the name it had before it was renamed."""
     return os.getenv(key) or (os.getenv(legacy) if legacy else None)
+
+
+def otp_key(value) -> str | None:
+    """An authenticator key the way pyotp reads it, without spaces or '=' at the end; None when it is not one."""
+    key = "".join(str(value or "").split()).upper().rstrip("=")
+    try:
+        # A letter too many or too few made pyotp fail the whole sign-in with "Incorrect padding" (#88).
+        base64.b32decode(key + "=" * (-len(key) % 8))
+    except ValueError:
+        return None
+    return key or None
 
 
 def _int(key: str, default: int = 0) -> int:
@@ -164,6 +176,11 @@ def settings_warnings() -> list:
     for name in _RETIRED_SWITCHES:
         if name not in seen and (os.environ.get(name) or "").strip():
             out.append(f"{name} is not a setting this bot reads, so it does nothing.")
+    for name in sorted(known_env_names()):
+        value = (os.environ.get(name) or "").strip()
+        if name.endswith(("_OTP_KEY", "_OTPKEY")) and value and not otp_key(value):
+            out.append(f"{name} is not the key from your authenticator app (letters A-Z and digits 2-7), "
+                       "so the bot waits for you to type the code over VNC instead.")
     return out
 
 
@@ -270,7 +287,7 @@ class Config:
     # --- Epic Games ---
     eg_email: str | None = os.getenv("EG_EMAIL") or os.getenv("EMAIL")
     eg_password: str | None = os.getenv("EG_PASSWORD") or os.getenv("PASSWORD")
-    eg_otp_key: str | None = _secret("EG_OTP_KEY", "EG_OTPKEY")
+    eg_otp_key: str | None = otp_key(_secret("EG_OTP_KEY", "EG_OTPKEY"))
     eg_parentalpin: str | None = os.getenv("EG_PARENTALPIN")
     # Recovery codes from Epic's authenticator setup, spent one at a time and
     # remembered in data/used_epic_codes.txt. Filling this in is what switches it on.
@@ -290,7 +307,7 @@ class Config:
     # --- Prime Gaming ---
     pg_email: str | None = os.getenv("PG_EMAIL") or os.getenv("EMAIL")
     pg_password: str | None = os.getenv("PG_PASSWORD") or os.getenv("PASSWORD")
-    pg_otp_key: str | None = _secret("PG_OTP_KEY", "PG_OTPKEY")
+    pg_otp_key: str | None = otp_key(_secret("PG_OTP_KEY", "PG_OTPKEY"))
     pg_force_check_collected: bool = _bool("PG_FORCE_CHECK_COLLECTED")
     # Legacy Games account that Prime's Legacy Games codes are redeemed into.
     lg_email: str | None = os.getenv("LG_EMAIL")
@@ -301,13 +318,13 @@ class Config:
     gog_password: str | None = os.getenv("GOG_PASSWORD") or os.getenv("PASSWORD")
     gog_newsletter: bool = _bool("GOG_NEWSLETTER")
     gog_force_redeem: bool = _bool("GOG_FORCE_REDEEM")
-    gog_otp_key: str | None = _secret("GOG_OTP_KEY")
+    gog_otp_key: str | None = otp_key(_secret("GOG_OTP_KEY"))
     gog_otp_codes: list[str] = [c.strip() for c in os.getenv("GOG_OTP_CODES", "").split(",") if c.strip()]
 
     # --- Microsoft Store / Xbox ---
     ms_email: str | None = os.getenv("MS_EMAIL") or os.getenv("EMAIL")
     ms_password: str | None = os.getenv("MS_PASSWORD") or os.getenv("PASSWORD")
-    ms_otp_key: str | None = _secret("MS_OTP_KEY")
+    ms_otp_key: str | None = otp_key(_secret("MS_OTP_KEY"))
     ms_force_redeem: bool = _bool("MS_FORCE_REDEEM")
     # DLC giveaways GamerPower finds for Xbox.
     ms_claim_dlc: bool = _bool("MS_CLAIM_DLC", default=True)
@@ -333,7 +350,7 @@ class Config:
     # --- Ubisoft ---
     ubi_email: str | None = os.getenv("UBI_EMAIL") or os.getenv("EMAIL")
     ubi_password: str | None = os.getenv("UBI_PASSWORD") or os.getenv("PASSWORD")
-    ubi_otp_key: str | None = _secret("UBI_OTP_KEY", "UBI_OTPKEY")
+    ubi_otp_key: str | None = otp_key(_secret("UBI_OTP_KEY", "UBI_OTPKEY"))
 
     # --- GamerPower & Fanatical ---
     # Some GamerPower giveaways redirect to Fanatical.com,
@@ -341,7 +358,7 @@ class Config:
     # Switched on by naming it in STORES, like every side store.
     fanatical_email: str | None = os.getenv("FANATICAL_EMAIL") or os.getenv("EMAIL")
     fanatical_password: str | None = os.getenv("FANATICAL_PASSWORD") or os.getenv("PASSWORD")
-    fanatical_otp_key: str | None = _secret("FANATICAL_OTP_KEY")
+    fanatical_otp_key: str | None = otp_key(_secret("FANATICAL_OTP_KEY"))
     # Keep the newsletter a claim signed you up for (false = unsubscribe, like GOG_NEWSLETTER).
     fanatical_newsletter: bool = _bool("FANATICAL_NEWSLETTER")
 
@@ -350,7 +367,7 @@ class Config:
     itchio_password: str | None = os.getenv("ITCHIO_PASSWORD") or os.getenv("PASSWORD")
     # Spent one at a time and remembered in data/used_itchio_codes.txt. The README's
     # two-factor section explains how this differs from an authenticator secret.
-    itchio_otp_key: str | None = _secret("ITCHIO_OTP_KEY")
+    itchio_otp_key: str | None = otp_key(_secret("ITCHIO_OTP_KEY"))
     itchio_otp_codes: list[str] = [c.strip() for c in os.getenv("ITCHIO_OTP_CODES", "").split(",") if c.strip()]
 
     # --- IndieGala ---

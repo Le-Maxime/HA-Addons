@@ -24,6 +24,30 @@ from src.core.config import cfg
 
 logger = logging.getLogger("fgc.notifier")
 
+DISCORD_MAX = 2000
+# Telegram refuses more than 4096 characters of text, and Apprise passes a long message on as it is.
+APPRISE_MAX = 4000
+
+
+def split_message(message: str, limit: int) -> list[str]:
+    """The message in parts of at most `limit` characters, cut at line ends so markdown stays whole."""
+    parts, current = [], ""
+    for line in message.split("\n"):
+        while len(line) > limit:
+            if current:
+                parts.append(current)
+                current = ""
+            parts.append(line[:limit])
+            line = line[limit:]
+        if current and len(current) + len(line) + 1 > limit:
+            parts.append(current)
+            current = line
+        else:
+            current = f"{current}\n{line}" if current else line
+    if current:
+        parts.append(current)
+    return parts or [message]
+
 
 async def send_discord(
     message: str,
@@ -37,26 +61,7 @@ async def send_discord(
         logger.debug("DISCORD_WEBHOOK not set – skipping Discord notification.")
         return
 
-    # Discord enforces a 2000-character limit per message.
-    # Split long messages into chunks so nothing gets dropped.
-    MAX_LEN = 2000
-    chunks = []
-    if len(message) <= MAX_LEN:
-        chunks = [message]
-    else:
-        # Split on newline boundaries to keep formatting intact
-        current = ""
-        for line in message.split("\n"):
-            # +1 accounts for the newline we'll re-add
-            if len(current) + len(line) + 1 > MAX_LEN:
-                if current:
-                    chunks.append(current)
-                current = line
-            else:
-                current = f"{current}\n{line}" if current else line
-        if current:
-            chunks.append(current)
-
+    chunks = split_message(message, DISCORD_MAX)
     async with httpx.AsyncClient(timeout=30) as client:
         for i, chunk in enumerate(chunks):
             data = {"content": chunk, "username": username}
@@ -108,14 +113,21 @@ async def send_apprise(message: str, *, title: str | None = None, attach: Path |
 
     # apprise is sync – run in executor to avoid blocking the loop
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(
-        None,
+    parts = split_message(message, APPRISE_MAX)
+    for i, part in enumerate(parts):
         # The message is written in markdown; Apprise turns it into whatever each service wants.
-        lambda: ap.notify(body=message, title=title or "Free Games Claimer",
-                          body_format=apprise.NotifyFormat.MARKDOWN, attach=str(attach) if attach else None),
-    )
-    # debug, not info: apprise already logs each target, avoids a duplicate-looking line.
-    logger.debug("Apprise notification sent.")
+        sent = await loop.run_in_executor(
+            None,
+            lambda part=part, first=(i == 0): ap.notify(
+                body=part, title=title or "Free Games Claimer", body_format=apprise.NotifyFormat.MARKDOWN,
+                attach=str(attach) if attach and first else None),
+        )
+        if sent:
+            # debug, not info: apprise already logs each target, avoids a duplicate-looking line.
+            logger.debug("Apprise notification sent (%d/%d).", i + 1, len(parts))
+        else:
+            logger.warning("Apprise could not deliver part %d/%d of the notification, the line above says why.",
+                           i + 1, len(parts))
 
 
 async def notify(

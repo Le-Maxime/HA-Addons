@@ -124,7 +124,7 @@ class PrimeGamingClaimer(BaseClaimer):
             if not await self._ensure_logged_in():
                 logger.error("Aborting Prime Gaming flow due to login failure.")
                 logger.debug("Prime sign-in gave up on %s", await self._page_brief())
-                needs_you(self.store_name)
+                needs_you(self.store_name, 0, "game")
                 if cfg.notify_errors:
                     await self.notify("prime-gaming: could not sign in, no games were claimed.")
                 return
@@ -893,7 +893,7 @@ class PrimeGamingClaimer(BaseClaimer):
             if self._signed_out:
                 left = len(filtered_games) - index
                 logger.error("Prime Gaming signed out mid-run, %d game(s) left for the next run.", left)
-                needs_you(self.store_name, left)
+                needs_you(self.store_name, left, "game")
                 break
 
     async def _claim_single_internal(self, game_info: dict) -> None:

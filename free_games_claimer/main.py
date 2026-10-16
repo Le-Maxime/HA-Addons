@@ -30,13 +30,13 @@ from src.core.config import cfg, settings_warnings
 from src.core.claimer import mask_account
 from src.core.redact import RedactFilter, hide_settings
 from src.core.database import init_db
-from src.core.run_state import reset_run_state, set_next_run_source, waiting_for_you
+from src.core.run_state import describe_wait, reset_run_state, set_next_run_source, waiting_for_you
 from src.core.selection import apply_run_selection
 from src.core.updates import notify_if_update_available
 from src.stores.aliexpress import claim_aliexpress
 from src.stores.epic import claim_epic
 from src.stores.epic_fab import claim_fab
-from src.stores.gamerpower import claim_side_stores, discover_giveaways
+from src.stores.gamerpower import SIDE_STORE_KEYS, claim_side_stores, discover_giveaways
 from src.stores.gog import claim_gog
 from src.stores.microsoft import claim_microsoft
 from src.stores.prime import claim_prime
@@ -146,6 +146,11 @@ DEFAULT_STORES: list[str] = ["steam", "epic", "prime", "gog", "microsoft", "ubis
 # Display name (e.g. "Prime Gaming") → canonical store key (e.g. "prime").
 _DISPLAY_TO_KEY: dict[str, str] = {disp: key for key, (disp, _) in ALL_CLAIMERS.items()} \
     | {disp: key for key, disp in REDEEM_STORES.items()}
+
+
+# Canonical store key → the name notifications use, the sites GamerPower claims included.
+_KEY_TO_DISPLAY: dict[str, str] = {key: disp for disp, key in _DISPLAY_TO_KEY.items()} \
+    | {key: label for label, key in SIDE_STORE_KEYS.items()}
 
 
 def _store_key(name: str) -> str:
@@ -521,7 +526,8 @@ async def run_claimers() -> None:
             logger.exception("Failed to activate pending Steam keys")
 
     # Final Summary Notification
-    if cfg.notify_summary and aggregated_results:
+    # A store that only waited for you returns no games, and "Needed you" must still arrive.
+    if cfg.notify_summary and (aggregated_results or waiting_for_you()):
         from src.core.notifier import format_game_list, markdown_safe
         msg_parts = []
         for result in aggregated_results:
@@ -553,10 +559,10 @@ async def run_claimers() -> None:
             msg_parts.append(f"{header}\n{format_game_list(relevant_games)}")
             
         # Kept out of the per-store lists: the summary filter drops anything that says "skipped".
-        stuck = {name: count for name, count in waiting_for_you().items() if cfg.store_notify_enabled(name)}
+        stuck = {(name, why, item): n for (name, why, item), n in waiting_for_you().items() if cfg.store_notify_enabled(name)}
         if stuck:
-            lines = [f"**{REDEEM_STORES.get(name, name.title())}**: waiting for you, {count} skipped"
-                     for name, count in sorted(stuck.items())]
+            lines = [f"**{_KEY_TO_DISPLAY.get(name, name.title())}**: {describe_wait(why, count, item)}"
+                     for (name, why, item), count in sorted(stuck.items())]
             msg_parts.append("🙋 Needed you:\n" + "\n".join(lines))
 
         if msg_parts:

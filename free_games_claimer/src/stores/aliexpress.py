@@ -287,7 +287,8 @@ def today_from_payloads(payloads) -> dict:
     carries ``signSuccess`` and today's coin prize.
     """
     out: dict = {"claimed": None, "coins": None}
-    for payload in payloads or []:
+    # Newest first: the calendar read before the collect still says today is open.
+    for payload in reversed(payloads or []):
         if "sign.list" not in str((payload or {}).get("api") or ""):
             continue
         try:
@@ -724,7 +725,8 @@ class AliExpressClaimer(BaseClaimer):
         prize and a ``sequenceNumber`` that counts the day of the running streak.
         """
         info: dict = {"streak": None, "tomorrow": None}
-        for payload in self._coin_payloads:
+        # Newest first: only the calendar read after the collect counts today as signed.
+        for payload in reversed(self._coin_payloads):
             if "sign.list" not in str(payload.get("api") or ""):
                 continue
             try:
@@ -735,23 +737,25 @@ class AliExpressClaimer(BaseClaimer):
                 self.logger.debug("Check-in calendar unreadable: %s", e)
                 continue
 
-            past_all_signed = True
+            signed: dict = {}
             for node in nodes:
                 distance = node.get("calendarDayDistance")
                 result = (node.get("signResultList") or [{}])[0]
                 coins = next((_as_int(p.get("prizeAmount")) for p in (result.get("prizeInfoList") or [])
                               if p.get("prizeType") == "coins"), None)
+                if isinstance(distance, int):
+                    signed[distance] = bool(result.get("signSuccess"))
                 if distance == 0:
                     info["streak"] = _as_int(result.get("sequenceNumber"))
                 elif distance == 1 and coins is not None:
                     info["tomorrow"] = coins
-                elif isinstance(distance, int) and distance < 0 and not result.get("signSuccess"):
-                    past_all_signed = False
 
-            # A missed day in the visible window means sequenceNumber is not the streak.
-            if info["streak"] is not None and not past_all_signed:
-                self.logger.debug("Check-in calendar shows a missed day, streak counter not trusted")
-                info["streak"] = None
+            # After a missed day the streak is the run of signed days since it, today included once signed.
+            missed = [d for d, ok in signed.items() if d < 0 and not ok]
+            if info["streak"] is not None and missed:
+                info["streak"] = sum(1 for d in range(max(missed) + 1, 1) if signed.get(d))
+                self.logger.debug("Check-in calendar shows a missed day at %d, streak counted since it: %d",
+                                  max(missed), info["streak"])
             if info["streak"] is not None or info["tomorrow"] is not None:
                 self.logger.debug("🔬 Check-in calendar: streak=%s tomorrow=%s (%d day node(s))",
                                   info["streak"], info["tomorrow"], len(nodes))
@@ -1499,91 +1503,6 @@ class AliExpressClaimer(BaseClaimer):
         except Exception as e:
             self.logger.debug("Button dump failed: %s", e)
 
-    async def _read_checkin_info(self) -> dict:
-        """Read the day-streak count and tomorrow's bonus.
-
-        Returns ``{"streak": int|None, "tomorrow": int|None}``.
-
-        The check-in APIs are the reliable source: on the page both numbers are
-        rotating digit animations and localized text, so the DOM is only used to
-        fill in whatever the API didn't provide.
-        """
-        info = self._extract_checkin_info_from_api()
-        if info.get("streak") is not None and info.get("tomorrow") is not None:
-            return info
-
-        dom = await self._read_checkin_info_dom()
-        return {
-            "streak": info.get("streak") if info.get("streak") is not None else dom.get("streak"),
-            "tomorrow": info.get("tomorrow") if info.get("tomorrow") is not None else dom.get("tomorrow"),
-        }
-
-    async def _read_checkin_info_dom(self) -> dict:
-        """DOM fallback for the streak / tomorrow numbers.
-
-        The streak number and its "day streak"/"seria" label live in SEPARATE
-        DOM elements (the number is often a `<div><span>N</span></div>` next to
-        an `<h3>day streak</h3>`), so a plain body-text regex misses it. We first
-        locate the label element and pull the nearest standalone integer from its
-        container, then fall back to a whole-page regex.
-        """
-        raw = await self.page.evaluate(r"""
-            (() => {
-                const isVisible = (el) => !!el && el.offsetParent !== null;
-                const labelRe = /^(day streak|days? in a row|seria|seria dni|dni serii|dni z rz[eę]du|streak)$/i;
-
-                let streak = null;
-                // Strategy 1: find the "day streak"/"seria" label, then read the
-                // nearest standalone integer from up to 2 ancestors.
-                const labels = [...document.querySelectorAll('h1,h2,h3,h4,span,div,p')]
-                    .filter(el => el.childElementCount === 0 && labelRe.test((el.textContent || '').trim()) && isVisible(el));
-                for (const label of labels) {
-                    let node = label;
-                    for (let up = 0; up < 3 && node.parentElement && streak === null; up++) {
-                        node = node.parentElement;
-                        // Prefer a dedicated number element, else the container text.
-                        const candidates = [...node.querySelectorAll('span,div,b,strong')]
-                            .map(e => (e.childElementCount === 0 ? (e.textContent || '').trim() : ''))
-                            .filter(t => /^\d{1,3}$/.test(t));
-                        if (candidates.length) { streak = parseInt(candidates[0], 10); break; }
-                        const m = (node.textContent || '').replace(/(day streak|seria|dni)/ig, ' ').match(/\b(\d{1,3})\b/);
-                        if (m) { streak = parseInt(m[1], 10); break; }
-                    }
-                    if (streak !== null) break;
-                }
-
-                // Strategy 2: whole-page regex fallback.
-                if (streak === null) {
-                    const text = document.body ? (document.body.textContent || '') : '';
-                    const m = text.match(/(\d{1,3})\s*(?:day streak|days? in a row|dni z rz[eę]du)/i)
-                        || text.match(/(?:seria|streak)[^\d]{0,12}(\d{1,3})/i);
-                    if (m) streak = parseInt(m[1], 10);
-                }
-
-                // Reject implausible values (rotating-digit animation artefacts).
-                if (streak !== null && (streak < 0 || streak > 999)) streak = null;
-
-                const text = document.body ? (document.body.textContent || '') : '';
-                // Only phrasings that tie the number to coins: a bare number near the
-                // word "tomorrow" is usually the day counter, not the reward.
-                const tomMatch = text.match(/Get\s*(\d{1,4})\s*check-in coins tomorrow/i)
-                    || text.match(/(\d{1,4})\s*(?:check-in )?coins tomorrow/i)
-                    || text.match(/tomorrow[^\d]{0,20}(\d{1,4})\s*(?:coins?|monet)/i)
-                    || text.match(/jutro[^\d]{0,20}(\d{1,4})\s*monet/i)
-                    || text.match(/(\d{1,4})\s*monet\w*\s*jutro/i);
-                const tomorrow = tomMatch ? parseInt(tomMatch[1], 10) : null;
-
-                return JSON.stringify({ streak: streak, tomorrow: tomorrow });
-            })()
-        """)
-        try:
-            info = json.loads(raw) if isinstance(raw, str) else {}
-        except (TypeError, ValueError):
-            info = {}
-        if not isinstance(info, dict):
-            info = {}
-        return {"streak": info.get("streak"), "tomorrow": info.get("tomorrow")}
-
     def _format_checkin_status(self, claimed_coins, info: dict, total) -> str:
         """Build the notification status string for a successful check-in.
 
@@ -1800,7 +1719,7 @@ class AliExpressClaimer(BaseClaimer):
                 await self._read_coin_api()  # refresh the balance and the check-in calendar
                 confirmed = today_from_payloads(self._coin_payloads).get("claimed")
                 if after.get("claimed") or confirmed or not after.get("btnText"):
-                    info = await self._read_checkin_info()
+                    info = self._extract_checkin_info_from_api()
                     # Prefer the freshest balance from the API; if it didn't
                     # refetch, estimate the new total from the pre-collect
                     # balance plus what we just collected.
@@ -1847,7 +1766,7 @@ class AliExpressClaimer(BaseClaimer):
             "The coin page rendered empty for the bot. Open the browser and tap Collect if the button is there.",
         )
         if await self._wait_for_vnc_login(_collected_manually, custom_msg=custom_msg):
-            info = await self._read_checkin_info()
+            info = self._extract_checkin_info_from_api()
             status = self._format_checkin_status(state.get("todayCoins"), info, self._user_coins)
             self.logger.info("✅ Collected manually via VNC. (%s)", status)
             self._report(status.replace("claimed", "claimed manually via VNC", 1))

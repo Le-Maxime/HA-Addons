@@ -369,7 +369,7 @@ class LegacyGamesClaimer(BaseClaimer):
             await self.start_browser()
             if not await self._ensure_logged_in():
                 logger.error("Aborting Legacy Games redemption due to login failure.")
-                needs_you(self.store_name, len(pending))
+                needs_you(self.store_name, len(pending), "code")
                 for row in pending:
                     self.notify_games.append({"title": row.title, "url": row.url,
                                               "status": f"code: {row.code} (Legacy Games, not redeemed)"})

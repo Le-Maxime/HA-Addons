@@ -15,7 +15,6 @@ from sqlalchemy import select
 from src.core.claimer import BaseClaimer, OTP_KEY_ATTEMPTS, filenamify, mask_account
 from src.core.config import cfg
 from src.core.database import ClaimedGame, async_session, get_or_create
-from src.core.run_state import needs_you
 from src.core.url_security import url_has_allowed_host
 
 logger = logging.getLogger("fgc.microsoft")
@@ -687,11 +686,10 @@ class MicrosoftClaimer(BaseClaimer):
             self.notify_games.append({"title": title, "url": url, "status": "existed"})
             return
 
-        # A giveaway runs for days, so this wording carries none of the words the summary filter drops.
+        # Finishing it is the bot's job: nothing is recorded, so the next run tries again.
         await self.take_screenshot(f"microsoft_{filenamify(title)}")
-        needs_you(self.store_name)
-        logger.warning("'%s' is free to keep, but the bot could not finish it. Open it yourself.", title)
-        self.notify_games.append({"title": title, "url": url, "status": "notified"})
+        logger.warning("'%s' is free to keep, but the bot could not finish it, trying again next run.", title)
+        self.notify_games.append({"title": title, "url": url, "status": "failed"})
 
     async def _press_get(self, url: str) -> str:
         """Take the game: Get on the page, then confirm in the window Microsoft opens for it."""

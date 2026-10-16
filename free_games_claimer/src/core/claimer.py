@@ -37,7 +37,7 @@ from src.core.display import (
     screen_state,
 )
 from src.core.redact import hide_account, mask_account
-from src.core.run_state import mark_answered, mark_unanswered, waits_for_nobody
+from src.core.run_state import CAPTCHA_UNSOLVED, mark_answered, mark_unanswered, needs_you, waits_for_nobody
 
 logger = logging.getLogger("fgc.claimer")
 
@@ -827,7 +827,7 @@ class BaseClaimer:
                 last_log = elapsed
                 remaining = timeout - elapsed
                 if remaining > 0:
-                    self.logger.info("Still waiting for login… %ds left.", remaining)
+                    self.logger.info("Still waiting for you… %ds left.", remaining)
         mark_unanswered(key)
         return False
 
@@ -887,6 +887,14 @@ class BaseClaimer:
             return not await present()
 
         return await self._wait_for_vnc_login(_cleared, custom_msg=custom_msg, store_key=store_key)
+
+    def _captcha_stops_store(self, left: int, item: str) -> bool:
+        """True once a captcha here went unsolved: the rest waits for the next run instead of drawing more checks."""
+        if not waits_for_nobody(self.store_name):
+            return False
+        self.logger.warning("A captcha was not solved, so %d more %s(s) wait for the next run.", left, item)
+        needs_you(self.store_name, left, item, why=CAPTCHA_UNSOLVED)
+        return True
 
     async def sleep(self, seconds: float) -> None:
         """Async sleep wrapper."""

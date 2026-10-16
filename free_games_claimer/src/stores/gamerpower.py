@@ -19,7 +19,7 @@ from src.core.claimer import BaseClaimer, OTP_KEY_ATTEMPTS, mask_account
 from src.core.redact import hide_account
 from src.core.config import cfg
 from src.core.database import async_session, ClaimedGame, get_or_create
-from src.core.run_state import needs_you, waits_for_nobody
+from src.core.run_state import NO_ANSWER, needs_you, waits_for_nobody
 from src.core.selection import is_store_active
 from src.core.url_security import url_has_allowed_host
 import logging
@@ -814,7 +814,8 @@ class GamerPowerClaimer(BaseClaimer):
                 if waits_for_nobody(store):
                     logger.info("⏭️ [GamerPower] '%s' → %s is waiting for you, skipping",
                                 game.get("title", "Unknown"), self._side_store(store)[0])
-                    needs_you(store)
+                    # Its earlier prompt was a sign-in or a captcha, so the reason stays plain.
+                    needs_you(store, 1, "giveaway", why=NO_ANSWER)
                     continue
                 await self._process_side_store(store, game)
         except Exception as exc:
@@ -1042,7 +1043,7 @@ class GamerPowerClaimer(BaseClaimer):
         if await self._wait_for_vnc_login(check_fn, custom_msg=msg, store_key=side_store_key(label)):
             return True
         logger.warning("[%s] Still not signed in, skipping this giveaway.", label)
-        needs_you(side_store_key(label))
+        needs_you(side_store_key(label), 1, "giveaway")
         return False
 
     async def _type_otp(self, label: str, code: str) -> bool:

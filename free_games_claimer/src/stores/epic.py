@@ -15,7 +15,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from src.core.claimer import (BaseClaimer, CHALLENGE_JS, OTP_KEY_ATTEMPTS, account_key, older_than, row_extra,
                               track_missing_base)
 from src.core.config import cfg
-from src.core.run_state import needs_you, waits_for_nobody
+from src.core.run_state import CAPTCHA_UNSOLVED, needs_you, waits_for_nobody
 from src.core.database import async_session, get_or_create
 from src.core.url_security import url_has_allowed_host
 from src.stores.epic_mobile import fetch_mobile_free_games
@@ -133,28 +133,20 @@ def tile_finder(slug: str) -> str:
     return TILE_FINDER.replace("__SHOWN__", SHOWN).replace("__WANT__", json.dumps("/" + slug.strip("/").lower()))
 
 
-FIND_CHECKOUT_FRAME = """() => [...document.querySelectorAll('iframe')]
-    .find(f => /payment|purchase/i.test(f.src || '') || f.closest('#webPurchaseContainer'))"""
-
-# The checkout frame's content corner on the page and the part of it on screen, for clicks and the wheel.
-FRAME_ORIGIN_JS = """
-JSON.stringify((() => {
-    const f = (__FRAME__)();
-    if (!f) return null;
-    const r0 = f.getBoundingClientRect();
+# Run on the checkout <iframe>: its content corner on the page and the part of it on screen, for clicks and the wheel.
+FRAME_ORIGIN_JS = """function() {
+    const f = this, r0 = f.getBoundingClientRect();
     if (r0.top < 0 || r0.bottom > innerHeight) f.scrollIntoView({ block: 'nearest', behavior: 'instant' });
     const r = f.getBoundingClientRect(), s = getComputedStyle(f);
-    return { x: r.left + f.clientLeft + parseFloat(s.paddingLeft || 0),
-             y: r.top + f.clientTop + parseFloat(s.paddingTop || 0),
-             w: f.clientWidth, top: Math.max(r.top, 0), bottom: Math.min(r.bottom, innerHeight) };
-})())
-""".replace("__FRAME__", FIND_CHECKOUT_FRAME)
+    return JSON.stringify({ x: r.left + f.clientLeft + parseFloat(s.paddingLeft || 0),
+                            y: r.top + f.clientTop + parseFloat(s.paddingTop || 0),
+                            w: f.clientWidth, top: Math.max(r.top, 0), bottom: Math.min(r.bottom, innerHeight) });
+}"""
 
-# True when a page point is on screen and lands on the checkout frame itself, not on a backdrop above it.
-FRAME_HIT_JS = """
-((px, py) => px > 0 && py > 0 && px < innerWidth && py < innerHeight
-    && document.elementFromPoint(px, py) === (__FRAME__)())
-""".replace("__FRAME__", FIND_CHECKOUT_FRAME)
+# Run on the checkout <iframe>: true when a page point is on screen and lands on it, not on a backdrop above it.
+FRAME_HIT_JS = """function(px, py) {
+    return px > 0 && py > 0 && px < innerWidth && py < innerHeight && document.elementFromPoint(px, py) === this;
+}"""
 
 # Only what a person can see: a zero-size duplicate of a button must never be the one clicked.
 SHOWN = r"""(b => { const r = b.getBoundingClientRect(), s = getComputedStyle(b);
@@ -288,16 +280,19 @@ class EpicGamesClaimer(BaseClaimer):
                 logger.info("🎮 [bold magenta]Found %d free game(s) to claim:[/bold magenta]\n%s", len(free_games), "\n".join(links))
 
             # --- Claim each game, then whatever GamerPower found for Epic ---
-            for game in free_games:
-                # Mobile games have no tile on the free games list, so they are opened by their address.
-                await self._claim_game(game["url"], from_list=game["url"] not in self._platform_labels)
-            handled = {url.rstrip("/").split("/")[-1] for url in (g["url"] for g in free_games)}
+            # Mobile games have no tile on the free games list, so they are opened by their address.
+            todo = [(game["url"], game["url"] not in self._platform_labels) for game in free_games]
+            handled = {url.rstrip("/").split("/")[-1] for url, _ in todo}
             for game in (extra_games or []):
                 if game["final_url"].rstrip("/").split("/")[-1] in handled:
                     logger.debug("[GamerPower] '%s' is on Epic's own list, already handled.", game.get("title"))
                     continue
                 logger.info("🎮 [GamerPower] '%s' → Epic Games", game.get("title", "Unknown"))
-                await self._claim_game(game["final_url"])
+                todo.append((game["final_url"], False))
+            for index, (url, from_list) in enumerate(todo):
+                if self._captcha_stops_store(len(todo) - index, "game"):
+                    break
+                await self._claim_game(url, from_list=from_list)
 
         except Exception as exc:
             logger.exception("Fatal error")
@@ -442,7 +437,7 @@ class EpicGamesClaimer(BaseClaimer):
             # A prompt nobody answered means nobody will answer the next two either.
             if waits_for_nobody(self.store_name):
                 logger.warning("Epic is waiting for you, so the remaining attempts are skipped.")
-                needs_you(self.store_name)
+                needs_you(self.store_name, 0, "game")
                 return False
             logger.warning("Not signed in – attempting automated login (attempt %d/3)…", attempt + 1)
 
@@ -1106,6 +1101,7 @@ class EpicGamesClaimer(BaseClaimer):
                 else:
                     logger.warning("Security check on '%s' not cleared, trying again next run.", title)
                     self.notify_games.append({"title": title, "url": url, "status": "failed"})
+                    needs_you(self.store_name, 1, "game", why=CAPTCHA_UNSOLVED)
                 await session.commit()
                 return
 
@@ -1200,7 +1196,7 @@ class EpicGamesClaimer(BaseClaimer):
                 await session.commit()
                 return
 
-            # ── NEW FLOW: "Add to library" or "Get" button (direct click, no iframe) ──
+            # ── NEW FLOW: "Get" on the page, then "Add to library" in the checkout frame ──
             if flow_type in ("new_add", "new_get"):
                 checkout_ok = await self._handle_new_checkout(title, flow_type)
 
@@ -1231,23 +1227,26 @@ class EpicGamesClaimer(BaseClaimer):
             await self._clear_checkout_challenge(title)
 
             # The checkout page only says what it thinks happened, the library says what is true.
-            if await self._confirm_in_library(url):
+            # A checkout that did not finish needs one look, not three reloads of a page on a session under watch.
+            if await self._confirm_in_library(url, tries=3 if checkout_ok else 1):
                 logger.info("✓ Claimed '%s' successfully!", title)
                 obj.status = "claimed"
                 obj.updated_at = datetime.now(timezone.utc)
                 notify_game["status"] = "claimed"
             else:
-                # The game is still free to take, so the summary says so instead of hiding a "failed".
+                # Finishing it is the bot's job: a failed row is tried again on every run while the game is free.
                 if checkout_ok:
-                    logger.warning("Claim of '%s' was not confirmed by the page, claim it yourself: %s", title, url)
+                    logger.warning("Claim of '%s' was not confirmed by the page, trying again next run.", title)
                     obj.status = "failed:unconfirmed"
                     await self.take_screenshot(f"epic_unconfirmed_{game_id}")
                 else:
-                    logger.error("Failed to claim '%s', claim it yourself: %s", title, url)
+                    logger.error("Could not claim '%s', trying again next run.", title)
                     obj.status = "failed"
                     await self.take_screenshot(f"epic_failed_{game_id}")
-                notify_game["status"] = "notified"
-                needs_you(self.store_name)
+                notify_game["status"] = "failed"
+                # A captcha nobody answered is the one part that was yours, so the summary says so.
+                if waits_for_nobody(self.store_name):
+                    needs_you(self.store_name, 1, "game", why=CAPTCHA_UNSOLVED)
 
             await session.commit()
 
@@ -1286,7 +1285,7 @@ class EpicGamesClaimer(BaseClaimer):
                             if (body.includes('thank you') || body.includes("it's all yours")
                                 || body.includes('successfully')
                                 || (body.includes('in library') && !body.includes('add it to your library'))) return 'success';
-                            if (document.querySelector('#webPurchaseContainer iframe')) return 'purchase iframe';
+                            if (document.querySelector('iframe[src*="/checkout"]')) return 'purchase iframe';
 
                             const btns = [...document.querySelectorAll('button')];
                             for (const btn of btns) {
@@ -1389,13 +1388,14 @@ class EpicGamesClaimer(BaseClaimer):
                         # The frame is cross-origin, so a script click there was the one click Epic could tell from a hand.
                         last_try = attempt == 24
                         if not add_clicked and await self._cdp_click_in_frame(
-                                ctx_id, FIND_ADD_TO_LIBRARY, "add to library", allow_script=last_try):
+                                ctx_id, FIND_ADD_TO_LIBRARY, "add to library", allow_script=last_try,
+                                frame_id=iframe_frame_id):
                             logger.debug("✓ Found and clicked 'Add to library' inside iframe.")
                             add_clicked = True
                             await self.sleep(2)
 
                         if not accepted and await self._cdp_click_in_frame(
-                                ctx_id, FIND_I_ACCEPT, "i accept", allow_script=last_try):
+                                ctx_id, FIND_I_ACCEPT, "i accept", allow_script=last_try, frame_id=iframe_frame_id):
                             logger.debug("✓ Found and clicked 'I accept' inside iframe.")
                             accepted = True
                             await self.sleep(2)
@@ -1602,7 +1602,7 @@ class EpicGamesClaimer(BaseClaimer):
         return await self._cdp_click_found(text_finder(text, tag, exact), text, tries=timeout)
 
     async def _cdp_click_in_frame(self, ctx_id: int, finder: str, label: str, allow_script: bool = False,
-                                  tries: int = 1) -> bool:
+                                  tries: int = 1, *, frame_id) -> bool:
         """Click inside the cross-origin checkout frame with the mouse: the spot inside it plus where it sits on the page."""
 
         async def run_js(expression):
@@ -1611,11 +1611,22 @@ class EpicGamesClaimer(BaseClaimer):
         async def read():
             return await self._read_box(run_js, finder)
 
-        async def frame():
+        async def on_owner(function, *args):
+            # The <iframe> holding this very frame: a selector once picked Epic's hidden hCaptcha frame instead.
             try:
-                return json.loads(await self.page.evaluate(FRAME_ORIGIN_JS) or "null")
-            except Exception:
+                backend_id, _ = await self.page.send(uc.cdp.dom.get_frame_owner(frame_id))
+                owner = await self.page.send(uc.cdp.dom.resolve_node(backend_node_id=backend_id))
+                result, _ = await self.page.send(uc.cdp.runtime.call_function_on(
+                    function, object_id=owner.object_id, return_by_value=True,
+                    arguments=[uc.cdp.runtime.CallArgument(value=a) for a in args]))
+                return result.value if result else None
+            except Exception as e:
+                logger.debug("Could not find the checkout frame on the page: %s", e)
                 return None
+
+        async def frame():
+            raw = await on_owner(FRAME_ORIGIN_JS)
+            return json.loads(raw) if isinstance(raw, str) else None
 
         async def wheel_point():
             f = await frame()
@@ -1629,7 +1640,10 @@ class EpicGamesClaimer(BaseClaimer):
             if not f:
                 return None
             px, py = round(f["x"] + box["x"]), round(f["y"] + box["y"])
-            return (px, py) if await self.page.evaluate(f"({FRAME_HIT_JS})({px}, {py})") is True else None
+            if await on_owner(FRAME_HIT_JS, px, py) is True:
+                return px, py
+            logger.debug("Point (%d, %d) is not on the checkout frame at %s.", px, py, f)
+            return None
 
         return await self._click_until_taken(read, run_js, wheel_point, to_page, finder, f"{label} (checkout frame)",
                                              tries=tries, allow_script=allow_script)
@@ -1641,19 +1655,17 @@ class EpicGamesClaimer(BaseClaimer):
     async def _handle_purchase_iframe(self, title: str) -> bool | str:
         """Complete the purchase inside Epic's payment iframe, or answer "not-free" when its total is not zero.
 
-        Epic's checkout is inside a cross-origin iframe (payment-store.epicgames.com).
-        Normal JavaScript can't reach inside cross-origin iframes, so we use CDP:
+        Epic's checkout is inside its own frame (store.epicgames.com/checkout), which page
+        JavaScript does not reach into, so we use CDP:
           1. Find the iframe's unique FrameId from the browser's frame tree
           2. Create an isolated JavaScript execution context inside that frame
           3. Run our button-clicking scripts inside that context
         """
         try:
-            # Wait for the iframe to appear on the main page
+            # Wait for the checkout frame in the frame tree: the page no longer wraps it in #webPurchaseContainer.
             for attempt in range(10):
-                has_iframe = await self.page.evaluate(
-                    """!!document.querySelector('#webPurchaseContainer iframe')"""
-                )
-                if has_iframe:
+                iframe_frame_id = self._find_purchase_frame(await self.page.send(uc.cdp.page.get_frame_tree()))
+                if iframe_frame_id:
                     break
                 await self.sleep(1)
             else:
@@ -1661,13 +1673,6 @@ class EpicGamesClaimer(BaseClaimer):
                 return False
 
             await self.sleep(2)  # let iframe content load
-
-            # Find the iframe's FrameId in the frame tree
-            frame_tree = await self.page.send(uc.cdp.page.get_frame_tree())
-            iframe_frame_id = self._find_purchase_frame(frame_tree)
-            if not iframe_frame_id:
-                logger.warning("Could not locate purchase frame in tree for '%s'", title)
-                return False
 
             # Step 2: Create an isolated JavaScript context inside the iframe
             # This gives us the ability to run code inside the payment frame
@@ -1731,7 +1736,8 @@ class EpicGamesClaimer(BaseClaimer):
 
             # Click "Place Order" (wait for it to not be in loading state)
             for attempt in range(8):
-                clicked = await self._cdp_click_in_frame(ctx_id, FIND_PLACE_ORDER, "place order", allow_script=attempt == 7)
+                clicked = await self._cdp_click_in_frame(ctx_id, FIND_PLACE_ORDER, "place order", allow_script=attempt == 7,
+                                                         frame_id=iframe_frame_id)
                 if clicked:
                     logger.debug("Clicked 'Place Order' for '%s'", title)
                     break
@@ -1740,7 +1746,8 @@ class EpicGamesClaimer(BaseClaimer):
             await self.sleep(2)
 
             # Handle "I Accept" / "I Agree" button (EU accounts only)
-            await self._cdp_click_in_frame(ctx_id, FIND_I_ACCEPT, "i accept", allow_script=True, tries=2)
+            await self._cdp_click_in_frame(ctx_id, FIND_I_ACCEPT, "i accept", allow_script=True, tries=2,
+                                           frame_id=iframe_frame_id)
 
             # Wait for order confirmation on the MAIN page
             # Epic shows either "Thanks for your order!" or "It's all yours" dialog
@@ -1773,7 +1780,7 @@ class EpicGamesClaimer(BaseClaimer):
             return None
         for child in frame_tree.child_frames:
             url = child.frame.url or ""
-            if "payment" in url or "purchase" in url or "webPurchaseContainer" in url:
+            if "payment" in url or "purchase" in url or "/checkout" in url:
                 return child.frame.id_
             found = self._find_purchase_frame(child)
             if found:

@@ -204,7 +204,7 @@ class SteamClaimer(BaseClaimer):
                 if self._signed_out:
                     left = len(todo) - index
                     logger.error("Aborting Steam flow due to login failure, %d game(s) left for the next run.", left)
-                    needs_you(self.store_name, left)
+                    needs_you(self.store_name, left, "game")
                     if cfg.notify_errors:
                         await self.notify("steam: could not sign in, the rest is left for the next run.")
                     break
@@ -243,7 +243,7 @@ class SteamClaimer(BaseClaimer):
             await self.sleep(3)
             if not await self._ensure_logged_in(URL_STORE):
                 logger.error("Not signed in to Steam, the %d key(s) stay queued for the next run.", len(waiting))
-                needs_you(self.store_name, len(waiting))
+                needs_you(self.store_name, len(waiting), "key")
                 return
             for row_id, title, key in waiting:
                 if not await self._activate_key(row_id, title, key):

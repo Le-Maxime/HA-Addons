@@ -13,7 +13,10 @@ from datetime import datetime, timezone
 logger = logging.getLogger("fgc.run")
 
 _unanswered: set[str] = set()
-_skipped: dict[str, int] = {}
+_skipped: dict[tuple[str, str, str], int] = {}
+NOT_SIGNED_IN = "the sign-in was not finished"
+CAPTCHA_UNSOLVED = "a captcha was not solved"
+NO_ANSWER = "nobody answered over VNC"
 # Asks the scheduler when it runs the bot next, at the moment that is needed; None for a single run.
 _next_run_source = None
 _run_started: datetime | None = None
@@ -41,16 +44,23 @@ def mark_answered(store: str) -> None:
     _unanswered.discard(_key(store))
 
 
-def needs_you(store: str, skipped: int = 1) -> None:
-    """Count what this store could not do without you, for the run summary."""
+def needs_you(store: str, skipped: int, item: str, why: str = NOT_SIGNED_IN) -> None:
+    """Count the items (game, key, code) this store left for the next run without you, and why; 0 when not known yet."""
     key = _key(store)
     if key:
-        _skipped[key] = _skipped.get(key, 0) + skipped
+        _skipped[(key, why, item)] = _skipped.get((key, why, item), 0) + skipped
 
 
 def waiting_for_you() -> dict:
-    """Stores that needed you in this run, mapped to how much they skipped."""
+    """(store, why, item) that needed you in this run, mapped to how many items wait for the next run."""
     return dict(_skipped)
+
+
+def describe_wait(why: str, count: int, item: str) -> str:
+    """The sentence for the summary, e.g. 'a captcha was not solved, so 3 games wait for the next run.'"""
+    if not count:
+        return f"{why}, so nothing was claimed."
+    return f"{why}, so {count} {item}{'' if count == 1 else 's'} wait{'s' if count == 1 else ''} for the next run."
 
 
 def set_next_run_source(source) -> None:

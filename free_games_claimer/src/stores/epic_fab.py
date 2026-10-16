@@ -14,6 +14,7 @@ import nodriver as uc
 from src.core.claimer import BaseClaimer, OTP_KEY_ATTEMPTS, account_key
 from src.core.config import cfg
 from src.core.database import async_session, get_or_create
+from src.core.run_state import CAPTCHA_UNSOLVED, needs_you
 from src.core.url_security import url_has_allowed_host
 from src.stores.epic import checkout_total_is_zero
 
@@ -204,7 +205,9 @@ class FabClaimer(BaseClaimer):
                 logger.error("Aborting Fab claim flow due to login failure.")
                 return
 
-            for item in listings:
+            for index, item in enumerate(listings):
+                if self._captcha_stops_store(len(listings) - index, "asset"):
+                    break
                 await self._claim_listing(item)
 
             logger.info("Fab claimer finished.")
@@ -535,6 +538,7 @@ class FabClaimer(BaseClaimer):
         if await self._human_challenge_present() and not await self._wait_out_challenge("Fab"):
             logger.warning("A security check is blocking the Fab page for '%s'.", title)
             self.notify_games.append({"title": title, "url": url, "status": "failed:blocked"})
+            needs_you(self.store_name, 1, "asset", why=CAPTCHA_UNSOLVED)
             return
 
         state = await self._page_state()
