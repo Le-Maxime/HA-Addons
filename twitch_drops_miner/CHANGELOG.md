@@ -22,6 +22,19 @@
 
 
 
+
+## v16.dev.9e3fac2
+
+Updated Twitch Drops Miner to v16.dev.9e3fac2
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/9e3fac2e1931d1749893489a7262fe542f5df2fd
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@9e3fac2e1931d1749893489a7262fe542f5df2fd: Bump astral-sh/setup-uv from 10.2.0 to 10.3.0 (#19)
+
 ## v16.dev.7c32057
 
 Updated Twitch Drops Miner to v16.dev.7c32057
@@ -338,6 +351,19 @@ Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
 
 
 
+
+
+## v16.dev.9e3fac2
+
+Updated Twitch Drops Miner to v16.dev.9e3fac2
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/9e3fac2e1931d1749893489a7262fe542f5df2fd
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@9e3fac2e1931d1749893489a7262fe542f5df2fd: Bump astral-sh/setup-uv from 10.2.0 to 10.3.0 (#19)
 
 ## v16.dev.7c32057
 
