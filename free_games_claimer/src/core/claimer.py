@@ -313,6 +313,7 @@ class BaseClaimer:
             "--lang=en-US",
             "--accept-lang=en-US,en",  # no q-values: Chrome copies this into navigator.languages
             "--disable-dev-shm-usage",     # Docker shared memory fix
+            "--disk-cache-size=262144000",  # 250 MB each for files and compiled scripts, else a profile's cache grows past a gigabyte
             "--disable-smooth-scrolling",  # CPU optimization
             "--disable-extensions",        # CPU optimization
             "--mute-audio",                # CPU optimization
@@ -875,6 +876,9 @@ class BaseClaimer:
             await asyncio.sleep(2)
             waited += 2
         if not ask:
+            return False
+        # Nobody answered this store's last prompt, so it is not asked again and the log does not claim it is.
+        if waits_for_nobody(store_key or self.store_name):
             return False
 
         self.logger.warning("%s is behind a Cloudflare / captcha human-check – requesting manual solve via VNC.", label)

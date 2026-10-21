@@ -581,7 +581,7 @@ class FabClaimer(BaseClaimer):
             return
 
         await self.sleep(6)
-        checkout = await self._complete_checkout()
+        checkout = await self._complete_checkout(title)
         if checkout == "not-free":
             self.notify_games.append({"title": title, "url": url, "status": "skipped:not-free"})
             return
@@ -690,7 +690,7 @@ class FabClaimer(BaseClaimer):
             logger.debug("Could not evaluate inside the checkout frame: %s", exc)
             return None
 
-    async def _complete_checkout(self) -> bool | str:
+    async def _complete_checkout(self, title: str = "") -> bool | str:
         """Press "Add to library" in Epic's checkout frame, or answer "not-free" when its total is not zero."""
         # The same frame sells assets, so only a total of zero is ever ordered; an unreadable one is not.
         document, state, free = None, {}, None
@@ -701,7 +701,7 @@ class FabClaimer(BaseClaimer):
             if document is None:
                 continue
             state = await self._checkout_eval(document, CHECKOUT_STATE_JS) or {}
-            free = checkout_total_is_zero(state.get("text"))
+            free = checkout_total_is_zero(state.get("text"), title)
             if free is not None:
                 break
         if document is None:

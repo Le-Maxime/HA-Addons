@@ -94,7 +94,8 @@ CHECKOUT_STATE_JS = """
         fields['sta[region]'] = val('sta[region]');
         fields['sta[vat]'] = val('sta[vat]');
         return JSON.stringify({
-            present: !!document.querySelector('input[name="sta[vatRegistered]"]'),
+            present: !!document.querySelector('[name="sta[firstName]"]'),
+            taxAsked: !!document.querySelector('input[name="sta[vatRegistered]"]'),
             exempt: !!(yes && yes.checked),
             regionVisible: !!(region && vis(region)),
             fields: fields,
@@ -462,7 +463,12 @@ class UnityClaimer(BaseClaimer):
             self.notify_games.append({"title": title, "url": url, "status": "failed:checkout"})
             return
 
-        if not await self._prepare_checkout():
+        prepared = await self._prepare_checkout()
+        if prepared is None:
+            logger.warning("Unity's checkout form did not load, cannot claim '%s', trying again next run.", title)
+            self.notify_games.append({"title": title, "url": url, "status": "failed:checkout"})
+            return
+        if not prepared:
             logger.warning("The checkout form is still incomplete, cannot claim '%s'.", title)
             self.notify_games.append({"title": title, "url": url, "status": "skipped:setup"})
             return
@@ -503,11 +509,12 @@ class UnityClaimer(BaseClaimer):
 
     async def _start_checkout(self) -> bool:
         """Press Buy Now and answer the Terms of Service modal it opens."""
+        # Only Buy Now: Add to cart never opens the checkout and leaves the asset in your cart.
         clicked = await self.page.evaluate("""
             (() => {
                 const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
                 const btn = [...document.querySelectorAll('button, a[role=button]')].filter(vis)
-                    .find(b => /buy now|add to cart/i.test((b.innerText || '').trim()));
+                    .find(b => /^buy now$/i.test((b.innerText || '').trim()));
                 if (!btn || btn.disabled) return false;
                 btn.click();
                 return true;
@@ -555,8 +562,8 @@ class UnityClaimer(BaseClaimer):
         script = CHECKOUT_STATE_JS.replace("__FIELDS__", json.dumps(list(REQUIRED_FIELDS)))
         return await self._evaluate_json(script)
 
-    async def _prepare_checkout(self) -> bool:
-        """Make Unity accept its own form: answer the tax question, ask for help if data is missing."""
+    async def _prepare_checkout(self) -> bool | None:
+        """Make Unity accept its own form: answer the tax question, ask for help if data is missing; None if no form."""
         state = {}
         waited = 0
         while waited < 60:
@@ -567,7 +574,15 @@ class UnityClaimer(BaseClaimer):
             waited += 4
         if not state.get("present"):
             logger.debug("The checkout billing form never rendered.")
-            return False
+            return None
+
+        # US checkouts have no tax question (#89); elsewhere it can render a moment after the address.
+        for _ in range(4):
+            if state.get("taxAsked"):
+                break
+            await self.sleep(2)
+            state = await self._checkout_state()
+        logger.debug("Checkout billing form rendered, tax question shown: %s", bool(state.get("taxAsked")))
 
         # An empty tax number with "exempt: yes" is the state Unity itself rejects.
         if state.get("exempt") and not str(state.get("fields", {}).get("sta[vat]") or "").strip():

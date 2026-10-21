@@ -23,6 +23,8 @@ logger = logging.getLogger("fgc.prime")
 # Prime Gaming claims page URL (shows all available free games)
 BASE_URL = "https://luna.amazon.com"
 URL_CLAIM = f"{BASE_URL}/claims/home"
+# A game claimed before its code could be read; its tile is opened again until the code shows.
+NO_CODE = "failed:no-code"
 
 # Path to the JSON file where we export claimed games with codes
 JSON_FILE = cfg._data_dir / "prime-gaming.json"
@@ -714,16 +716,14 @@ class PrimeGamingClaimer(BaseClaimer):
         if diag.get("containerChildren", 0) == 0:
             logger.warning("Container is empty or not found! It might be hidden or DOM structure changed.")
 
-        # --- DB Fetch to skip known codes ---
-        existing_codes_map = {}
-        if cfg.pg_force_check_collected:
-            from src.core.database import async_session, ClaimedGame
-            from sqlalchemy import select
-            async with async_session() as session:
-                stmt = select(ClaimedGame).where(ClaimedGame.store == "prime", ClaimedGame.code.isnot(None), ClaimedGame.code != "")
-                result = await session.execute(stmt)
-                for g in result.scalars().all():
-                    existing_codes_map[g.game_id or g.title] = g.code
+        # --- Games claimed before their code could be read: their tiles are opened again ---
+        from src.core.database import ClaimedGame
+        from sqlalchemy import select
+        async with async_session() as session:
+            missing_code = sorted(row.game_id for row in (await session.execute(select(ClaimedGame).where(
+                ClaimedGame.store == "prime", ClaimedGame.status == NO_CODE))).scalars().all())
+        if missing_code:
+            logger.debug("Codes still to read: %s", missing_code)
 
         # --- Statistics ---
         force_check_str = "true" if cfg.pg_force_check_collected else "false"
@@ -731,6 +731,7 @@ class PrimeGamingClaimer(BaseClaimer):
             rf"""
             JSON.stringify((() => {{
                 const forceCheck = {force_check_str};
+                const recheck = new Set({json.dumps(missing_code)});
                 const container = document.querySelector('div[data-a-target="offer-list-FGWP_FULL"]');
                 if (!container) return {{ collected: 0, unclaimed: 0, games: [], totalCards: 0 }};
 
@@ -758,7 +759,6 @@ class PrimeGamingClaimer(BaseClaimer):
                         let targetBtn = btn || link;
                         
                         if (!isUnclaimed) {{
-                            if (!forceCheck) return;
                             // Search for the how to play / play game button on collected games
                             const htpBtn = Array.from(card.querySelectorAll('button, a')).find(b => b.textContent && (b.textContent.toLowerCase().includes('how to play') || b.textContent.toLowerCase().includes('play game')));
                             if (!htpBtn) return;
@@ -780,6 +780,8 @@ class PrimeGamingClaimer(BaseClaimer):
                             }}
                             p = p.parentElement;
                         }}
+                        // A collected tile comes back only with PG_FORCE_CHECK_COLLECTED or while its code is unread.
+                        if (targetIsHowToPlay && !forceCheck && !recheck.has(titleText)) return;
 
                         const hrefValue = link ? link.getAttribute('href') : '';
                         
@@ -851,25 +853,18 @@ class PrimeGamingClaimer(BaseClaimer):
 
         total_cards = int(stats.get("totalCards", 0))
         collected = int(stats.get("collected", 0))
-        all_games = stats.get("games", [])
-        
-        # When FORCE_CHECK is on, do NOT filter by existing codes, recheck everything
-        # Epic/Amazon will be caught and skipped Python-side after clicking
-        filtered_games = []
-        for g in all_games:
-            if not cfg.pg_force_check_collected and g.get("alreadyCollected") and existing_codes_map.get(g["title"]):
-                continue
-            filtered_games.append(g)
+        # The page script already left out collected tiles, except those still waiting for their code.
+        filtered_games = stats.get("games", [])
 
         total = total_cards
         unclaimed_new = len([g for g in filtered_games if not g.get("alreadyCollected")])
         to_recheck = len([g for g in filtered_games if g.get("alreadyCollected")])
 
-        logger.info("Total games: %d | Already claimed: %d | Unclaimed: %d | To re-check (force): %d",
+        logger.info("Total games: %d | Already claimed: %d | Unclaimed: %d | To re-check: %d",
                     total, collected, unclaimed_new, to_recheck)
 
         if cfg.pg_force_check_collected:
-            logger.debug("PG_FORCE_CHECK_COLLECTED is enabled: explicitly parsing already collected tiles lacking codes in DB.")
+            logger.debug("PG_FORCE_CHECK_COLLECTED is enabled: every collected tile is opened again.")
 
         if not filtered_games:
             logger.info("No unclaimed games or pending caches.")
@@ -1196,15 +1191,19 @@ class PrimeGamingClaimer(BaseClaimer):
                 if link_needed:
                     logger.warning("'%s' requires account linking for %s – skipping.", title, store)
                     self.notify_games.append({"title": title, "url": url, "status": f"needs linking ({store})"})
+                elif game_info.get("alreadyCollected"):
+                    logger.debug("The code for '%s' is still not on the page, looking again next run.", title)
                 else:
-                    logger.warning("No code found for '%s'.", title)
-                    self.notify_games.append({"title": title, "url": url, "status": "claimed (no code)"})
+                    logger.warning("No code found for '%s', looking again next run.", title)
+                    self.notify_games.append({"title": title, "url": url, "status": "claimed (code read next run)"})
 
                 async with async_session() as session:
                     obj, _ = await get_or_create(
                         session, store="prime", user=self.user or "unknown",
                         game_id=title, title=title, url=url, status="claimed",
                     )
+                    if not link_needed and not obj.code:
+                        obj.status = NO_CODE
                     await session.commit()
                 return
 
@@ -1232,6 +1231,9 @@ class PrimeGamingClaimer(BaseClaimer):
                 )
                 obj.code = code
                 obj.extra = json.dumps(extra)
+                # Read at last: the code joins the GOG and Legacy Games redemptions, which look for "claimed".
+                if obj.status == NO_CODE:
+                    obj.status = "claimed"
                 await session.commit()
 
             _save_to_json(title, code=code, store=store, url=url, status="claimed")

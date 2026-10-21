@@ -31,6 +31,23 @@ def is_gog_code(code: str, extra: str | None) -> bool:
     return shaped and tag in ("", "unknown")
 
 
+def gog_redeem_outcome(texts: dict) -> str:
+    """What GOG's redeem page says: locked, already, success or unknown, from its heading, message, main part and page."""
+    h1, msg, body, page = (str((texts or {}).get(k) or "").lower() for k in ("h1", "msg", "body", "page"))
+    # "Currently being redeemed" and "already redeemed" both carry "redeemed", so they are read before success.
+    if "currently being redeemed" in page:
+        return "locked"
+    if any(word in h1 or word in msg for word in ("already", "już")):
+        return "already"
+    if any(word in h1 or word in msg for word in ("success", "sukces")) or "zrealizowano" in msg or "redeemed" in msg:
+        return "success"
+    if "already" in body or "już" in body:
+        return "already"
+    if "success" in body and "order" in body:
+        return "success"
+    return "unknown"
+
+
 class GOGClaimer(BaseClaimer):
     store_name = "gog"
 
@@ -597,20 +614,19 @@ class GOGClaimer(BaseClaimer):
             # Check the page to see if redemption was successful.
             # We look at the page heading and message boxes for success/already-redeemed indicators.
             # Supports both English and Polish text on the GOG website.
-            result_state = await self.page.evaluate("""
-                (() => {
-                    const h1 = (document.querySelector('h1')?.textContent || '').toLowerCase();
-                    const msgBox = (document.querySelector('.messages-container, .redeem__message, .status-msg')?.textContent || '').toLowerCase();
-                    const bodyPart = (document.querySelector('.layout-body, main, #main, .content')?.textContent || '').toLowerCase();
-                    const page = (document.body ? document.body.innerText : '').toLowerCase();
-
-                    if (page.includes('currently being redeemed')) return 'locked';
-                    if (h1.includes('success') || h1.includes('sukces') || msgBox.includes('success') || msgBox.includes('sukces') || msgBox.includes('zrealizowano') || msgBox.includes('redeemed')) return 'success';
-                    if (bodyPart.includes('already') || bodyPart.includes('już') || msgBox.includes('already')) return 'already';
-                    if (bodyPart.includes('success') && bodyPart.includes('order')) return 'success';
-                    return 'unknown';
-                })()
+            texts = await self.page.evaluate("""
+                JSON.stringify({
+                    h1: document.querySelector('h1')?.textContent || '',
+                    msg: document.querySelector('.messages-container, .redeem__message, .status-msg')?.textContent || '',
+                    body: document.querySelector('.layout-body, main, #main, .content')?.textContent || '',
+                    page: document.body ? document.body.innerText : '',
+                })
             """)
+            try:
+                result_state = gog_redeem_outcome(json.loads(texts))
+            except (TypeError, ValueError):
+                result_state = "unknown"
+            logger.debug("GOG redeem page for '%s' reads as %s.", title, result_state)
 
             from src.core.database import async_session, ClaimedGame
             from sqlalchemy import select
@@ -652,12 +668,15 @@ class GOGClaimer(BaseClaimer):
                 logger.warning("GOG still says the code for '%s' is being redeemed, it stays pending for the next run.",
                                title)
             else:
-                logger.warning("GOG redeem result unclear for '%s'. Code: %s", title, mask_code(code))
-                self.notify_games.append({"title": title, "url": redeem_url, "status": f"code: {code} (GOG, check manually)"})
+                # The row stays "claimed", so the next run redeems it again: that is the bot's job, not yours.
+                logger.warning("GOG redeem result unclear for '%s', trying again next run. Code: %s", title, mask_code(code))
+                self.notify_games.append({"title": title, "url": redeem_url,
+                                          "status": f"code: {code} (GOG, failed, trying again next run)"})
 
         except Exception:
-            logger.exception("Failed to redeem GOG code for '%s'", title)
-            self.notify_games.append({"title": title, "url": url, "status": f"code: {code} (GOG, failed)"})
+            logger.exception("Failed to redeem GOG code for '%s', trying again next run", title)
+            self.notify_games.append({"title": title, "url": url,
+                                      "status": f"code: {code} (GOG, failed, trying again next run)"})
 
 async def claim_gog(extra_games: list | None = None) -> dict:
     """Convenience entry point."""
