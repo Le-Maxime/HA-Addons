@@ -3,6 +3,11 @@
 
 
 
+
+## v1.1.20261022-9d5bafd
+
+Upstream update: fix: issue labelling tries again when the Claude Code download is turned away [skip ci]
+
 ## v1.1.20261021-5e6ef7e
 
 Upstream update: v1.18: Debian 13 with Python 3.13 in the image, Apprise 2 with Telegram kept on HTML, AliExpress collects in all 18 languages of its coin page and reads a collected day from the calendar, dependency updates
