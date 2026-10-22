@@ -2,6 +2,11 @@
 
 
 
+
+## v1.1.20261021-5e6ef7e
+
+Upstream update: v1.18: Debian 13 with Python 3.13 in the image, Apprise 2 with Telegram kept on HTML, AliExpress collects in all 18 languages of its coin page and reads a collected day from the calendar, dependency updates
+
 ## v1.1.20261021-a4c2302
 
 Upstream update: v1.17: Epic picks your saved account by itself, Unity claims for US accounts and no longer fills your cart, GOG spots a code someone already used, Fab claims free assets in Epic's newer checkout, Prime goes back for a code it could not read, browser profiles capped at 250 MB per cache, no second captcha prompt in the log, dependency updates

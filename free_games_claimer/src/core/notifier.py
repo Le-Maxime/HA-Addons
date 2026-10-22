@@ -82,11 +82,10 @@ async def send_discord(
 
 
 def markdown_ready(notify_url: str) -> list:
-    """The configured services, with ntfy told to render markdown.
+    """The configured services, with ntfy and Telegram told the format to render.
 
-    ntfy only formats bold and links when the request says so, and its Apprise plugin
-    decides that from the service address rather than from the message. An address that
-    already names a format is left alone.
+    Their Apprise plugins decide it from the service address rather than from the message.
+    An address that already names a format is left alone.
     """
     ready = []
     for url in str(notify_url or "").split(","):
@@ -94,8 +93,10 @@ def markdown_ready(notify_url: str) -> list:
         if not url:
             continue
         parts = urlsplit(url)
-        if parts.scheme.lower() in ("ntfy", "ntfys") and "format" not in parse_qs(parts.query):
-            url += ("&" if parts.query else "?") + "format=markdown"
+        # ntfy renders markdown only when asked; Telegram's Markdown cannot hold a link inside bold, so it gets HTML.
+        fmt = {"ntfy": "markdown", "ntfys": "markdown", "tgram": "html"}.get(parts.scheme.lower())
+        if fmt and "format" not in parse_qs(parts.query):
+            url += ("&" if parts.query else "?") + "format=" + fmt
         ready.append(url)
     return ready
 

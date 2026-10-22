@@ -36,6 +36,26 @@ SITE_CACHE = "fgc_site.json"
 # Coin balance comes from this mtop API (the DOM shows only animated digits).
 COIN_API_PREFIX = "https://acs.aliexpress.com/h5/mtop.aliexpress.coin.execute/"
 
+# The coin page's labels in all 18 of its languages, from AliExpress's own packs on lang.alicdn.com (#93, 21.10.2026).
+CHECKIN_LABELS = [
+    "collect", "einsammeln", "sammeln", "collecter", "recevoir", "canjear", "obtener", "ritira", "raccogli", "krijgen",
+    "ontvangen", "resgatar", "coletar", "odbierz", "получить", "отримати", "al", "topla", "受け取る", "獲得する", "받기",
+    "اجمع", "تحصيل", "לאיסוף", "לאסוף", "รับ", "เก็บ", "nhận ngay", "thu thập", "ambil",
+]
+EARN_MORE_LABELS = [
+    "earn more coins", "get more coins", "mehr münzen verdienen", "gagner plus de pièces", "gana más monedas",
+    "guadagna più monete", "verdien meer munten", "ganhe mais moedas", "zdobądź więcej", "заработать еще монеты",
+    "заробити більше монет", "daha fazla jeton kazanın", "もっとコインを獲得する", "코인 더 받기", "اكسب المزيد من العملات",
+    "הרוויחו עוד מטבעות", "รับเหรียญเพิ่มเติม", "kiếm thêm xu", "dapatkan lebih banyak koin",
+]
+TODAY_LABELS = [
+    "today", "heute", "aujourd'hui", "hoy", "oggi", "vandaag", "hoje", "dziś", "dzisiaj", "сегодня", "сьогодні", "bugün",
+    "本日", "오늘", "اليوم", "היום", "วันนี้", "hôm nay",
+]
+# The check-in button itself, by its id or class, when its label is in none of the lists above.
+CHECKIN_BUTTON_CSS = ('#signButton, [class*="aecoin-signButton-"], [class*="aecoin-checkInButton-"], '
+                      '[class*="aecoin-CheckInButton-"]')
+
 # In-page fetch/XHR interceptor stashing coin/check-in mtop responses in window.__fgcCoin (CDP handlers don't fire here).
 _COIN_CAPTURE_JS = r"""
 (function () {
@@ -1008,14 +1028,22 @@ class AliExpressClaimer(BaseClaimer):
                     const loginForm = onLoginPage || hasLoginInput || (loginPrompt && hasLoginBtn);
 
                     // Known labels: coin-page words, a Collect / check-in button, or the signed-in store header.
-                    const known = /day streak|seria|coins tomorrow|check-in coins|monety za zameldowanie|moje monety|earn more coins|zdob[aą]d[źz] wi[eę]cej/i.test(text)
-                        || [...document.querySelectorAll('button, div[role="button"], span, a')].some(el =>
-                            /^(collect|odbierz|raccogli|check[- ]?in|zamelduj)/i.test((el.textContent || '').trim()) && visible(el))
+                    const known = /day streak|seria|coins tomorrow|check-in coins|monety za zameldowanie|moje monety|tage in folge/i.test(text)
+                        || __EARN__.some(e => text.includes(e))
+                        // The check-in calendar renders for a signed-in account only; a guest gets the login form instead.
+                        || !!document.querySelector('[class*="aecoin-today-checked-"], [class*="aecoin-today-unchecked-"]')
+                        || [...document.querySelectorAll('button, div[role="button"], span, a')].some(el => {
+                            const t = (el.textContent || '').trim();
+                            return (/^(collect|odbierz|raccogli|check[- ]?in|zamelduj)/i.test(t)
+                                    || __COLLECT__.includes(t.toLowerCase().replace(/\s+\+?\d+$/, '')))
+                                && visible(el);
+                        })
                         || (location.hostname.toLowerCase().endsWith('aliexpress.com') &&
                             /wyloguj|sign out|log out|moje aliexpress|my aliexpress/i.test(text));
                     return JSON.stringify({loginForm, known});
                 })()
-            """)
+            """.replace("__EARN__", json.dumps(EARN_MORE_LABELS, ensure_ascii=False))
+                .replace("__COLLECT__", json.dumps(CHECKIN_LABELS, ensure_ascii=False)))
             state = json.loads(raw) if isinstance(raw, str) else {}
             if state.get("loginForm"):
                 self.logger.debug("Login check: login form on the page.")
@@ -1337,31 +1365,6 @@ class AliExpressClaimer(BaseClaimer):
             self.logger.debug("Could not measure the page: %s", e)
             return {}
 
-    async def _find_collect_by_coins(self, coins: int) -> str | None:
-        """Find the collect button by the coin count the API reported, in any language."""
-        try:
-            raw = await self.page.evaluate(r"""
-                (() => {
-                    const want = %d;
-                    const vis = el => !!el && el.offsetParent !== null;
-                    const els = [...document.querySelectorAll('button, div[role="button"], span, a')];
-                    for (const el of els) {
-                        const t = (el.textContent || '').trim();
-                        if (!t || t.length > 30 || !vis(el)) continue;
-                        const nums = (t.match(/\d+/g) || []).map(Number);
-                        // One label, one number, and it is exactly today's reward.
-                        if (nums.length === 1 && nums[0] === want && /[^\d\s+]/.test(t)) return t;
-                    }
-                    return null;
-                })()
-            """ % int(coins))
-            if raw:
-                self.logger.debug("Collect button found by its coin count (%s): %r", coins, raw)
-            return str(raw) if raw else None
-        except Exception as e:
-            self.logger.debug("Coin-count button lookup failed: %s", e)
-            return None
-
     async def _read_checkin_state(self) -> dict:
         """Read today's check-in state from the coin page.
 
@@ -1383,6 +1386,9 @@ class AliExpressClaimer(BaseClaimer):
                     // "Odbierz monety" – NOT promo texts like "Odbierz kupon 5$".
                     const collectRe = /^(collect|odbierz|raccogli|claim|check[- ]?in|zamelduj si[eę])(\s+\+?\d+)?(\s+(coins?|monet\w*))?$/i;
                     const earnRe = /^(earn more coins|zdob[aą]d[źz] wi[eę]cej)/i;
+                    const collect = new Set(__COLLECT__);
+                    const earn = __EARN__;
+                    const today = new Set(__TODAY__);
 
                     let btnText = null;
                     let earnText = null;
@@ -1391,12 +1397,32 @@ class AliExpressClaimer(BaseClaimer):
                     for (const el of els) {
                         const t = (el.textContent || '').trim();
                         if (!t || t.length > 40 || !isVisible(el)) continue;
-                        if (btnText === null && collectRe.test(t)) {
+                        const low = t.toLowerCase();
+                        if (btnText === null && (collectRe.test(t) || collect.has(low.replace(/\s+\+?\d+$/, '')))) {
                             btnText = t;
                             const m = t.match(/(\d+)/);
                             if (m) todayCoins = parseInt(m[1], 10);
                         }
-                        if (earnText === null && earnRe.test(t)) earnText = t;
+                        if (earnText === null && (earnRe.test(t) || earn.some(e => low.startsWith(e)))) earnText = t;
+                    }
+
+                    // The calendar marks today's tile once collected, in every language; seen live 21.10.
+                    const todayTile = document.querySelector('[class*="aecoin-today-checked-"], [class*="aecoin-today-unchecked-"]');
+                    const todayChecked = !!document.querySelector('[class*="aecoin-today-checked-"], [class*="aecoin-isTodayChecked-"]');
+                    if (todayCoins === null && todayTile) {
+                        const m = (todayTile.textContent || '').match(/(\d+)/);
+                        if (m) todayCoins = parseInt(m[1], 10);
+                    }
+
+                    // No known label at all: the page's own check-in button, found by its id or class (#93).
+                    if (btnText === null && earnText === null && !todayChecked) {
+                        const own = [...document.querySelectorAll(__BUTTON_CSS__)].find(el => isVisible(el) && !el.disabled
+                            && !/loading/i.test(String(el.className)) && (el.textContent || '').trim());
+                        if (own) {
+                            btnText = own.textContent.trim().replace(/\s+/g, ' ');
+                            const m = btnText.match(/(\d+)/);
+                            if (m) todayCoins = parseInt(m[1], 10);
+                        }
                     }
 
                     // Fallback: read today's amount from the check-in calendar chip
@@ -1405,7 +1431,7 @@ class AliExpressClaimer(BaseClaimer):
                         const todayRe = /^(today|dzi[śs]|dzisiaj)$/i;
                         for (const el of document.querySelectorAll('*')) {
                             const own = (el.childElementCount === 0 ? (el.textContent || '') : '').trim();
-                            if (!todayRe.test(own) || !isVisible(el)) continue;
+                            if (!(todayRe.test(own) || today.has(own.toLowerCase())) || !isVisible(el)) continue;
                             let node = el;
                             for (let up = 0; up < 3 && node.parentElement; up++) {
                                 node = node.parentElement;
@@ -1419,13 +1445,16 @@ class AliExpressClaimer(BaseClaimer):
                     // nodriver does not serialise JS objects into Python dicts,
                     // so return a JSON string and parse it on the Python side.
                     return JSON.stringify({
-                        claimed: btnText === null && earnText !== null,
+                        claimed: (btnText === null && earnText !== null) || todayChecked,
                         btnText: btnText,
                         earnText: earnText,
                         todayCoins: todayCoins
                     });
                 })()
-            """)
+            """.replace("__COLLECT__", json.dumps(CHECKIN_LABELS, ensure_ascii=False))
+                .replace("__EARN__", json.dumps(EARN_MORE_LABELS, ensure_ascii=False))
+                .replace("__TODAY__", json.dumps(TODAY_LABELS, ensure_ascii=False))
+                .replace("__BUTTON_CSS__", json.dumps(CHECKIN_BUTTON_CSS)))
             if isinstance(res, str):
                 parsed = json.loads(res)
                 if isinstance(parsed, dict):
@@ -1476,9 +1505,9 @@ class AliExpressClaimer(BaseClaimer):
         try:
             clicked = await self.page.evaluate(
                 "(() => { const target = %s;"
-                " const els = [...document.querySelectorAll('button, div[role=\"button\"], span, a')];"
-                " for (const b of els) { if ((b.textContent||'').trim() === target && b.offsetParent !== null) { b.click(); return true; } }"
-                " return false; })()" % json.dumps(btn_text)
+                " const els = [...document.querySelectorAll('button, div[role=\"button\"], span, a, ' + %s)];"
+                " for (const b of els) { if ((b.textContent||'').trim().replace(/\\s+/g, ' ') === target && b.offsetParent !== null) { b.click(); return true; } }"
+                " return false; })()" % (json.dumps(btn_text), json.dumps(CHECKIN_BUTTON_CSS))
             )
             return bool(clicked)
         except Exception as e:
@@ -1564,7 +1593,7 @@ class AliExpressClaimer(BaseClaimer):
                 (() => {
                     const coinText = (document.body ? (document.body.innerText || '') : '')
                         .split('\n').map(s => s.trim())
-                        .filter(s => /coin|check[- ]?in|streak|odbierz|monet|seria/i.test(s))
+                        .filter(s => /coin|check[- ]?in|streak|odbierz|monet|seria|münz|tage in folge/i.test(s))
                         .slice(0, 20);
                     return JSON.stringify({
                         iframes: document.querySelectorAll('iframe').length,
@@ -1656,16 +1685,10 @@ class AliExpressClaimer(BaseClaimer):
             if state.get("claimed") or today.get("claimed"):
                 self.logger.info(
                     "✨ Daily check-in already claimed today (%s).",
-                    state.get("earnText") or "confirmed by the check-in API")
+                    state.get("earnText") or ("marked on the calendar" if state.get("claimed")
+                                              else "confirmed by the check-in API"))
                 self._report("already claimed today ✨")
                 return
-
-            # The DOM read knows English and Polish labels only, so when it finds nothing
-            # the button is looked up by the coin count the API just reported.
-            if not state.get("btnText") and today.get("claimed") is False and coins:
-                label = await self._find_collect_by_coins(coins)
-                if label:
-                    state = {**state, "btnText": label, "todayCoins": coins}
 
             if state.get("btnText") and (coins is None or coins >= min_coins):
                 self.logger.info(
