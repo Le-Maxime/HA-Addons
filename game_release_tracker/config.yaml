@@ -1,0 +1,32 @@
+name: "Game Release Tracker"
+description: "Отслеживание релизов от DenuvOwO (HV), Artifact (HV) на cs.rin.ru и voices38 (Кряки) с интерактивным каталогом в Telegram."
+version: "1.2.0"
+slug: "game_release_tracker"
+url: "https://github.com/Le-Maxime/HA-Addons/tree/main/game_release_tracker"
+image: "ghcr.io/le-maxime/{arch}-addon-game_release_tracker"
+init: false
+arch:
+  - amd64
+  - aarch64
+boot: "auto"
+startup: "application"
+options:
+  check_interval_seconds: 120
+  telegram_token: ""
+  telegram_chat_id: ""
+  discord_webhook: ""
+  csrinru_phpbb3_u: ""
+  csrinru_phpbb3_k: ""
+  csrinru_phpbb3_sid: ""
+  securitytoken: ""
+  securitytoken_expiration: ""
+schema:
+  check_interval_seconds: int
+  telegram_token: password
+  telegram_chat_id: str
+  discord_webhook: str?
+  csrinru_phpbb3_u: str?
+  csrinru_phpbb3_k: password?
+  csrinru_phpbb3_sid: password?
+  securitytoken: str?
+  securitytoken_expiration: str?

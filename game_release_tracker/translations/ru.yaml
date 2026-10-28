@@ -1,0 +1,28 @@
+configuration:
+  telegram_token:
+    name: "Токен Telegram-бота"
+    description: "Токен вашего бота от @BotFather (например: 123456789:ABCdef...)"
+  telegram_chat_id:
+    name: "Telegram Chat ID администратора"
+    description: "Ваш числовой ID в Telegram (узнать можно у @myidbot или @userinfobot)"
+  discord_webhook:
+    name: "Discord Webhook URL"
+    description: "URL вебхука для дублирования алертов в канал Discord (необязательно)"
+  check_interval_seconds:
+    name: "Интервал проверки (сек)"
+    description: "Интервал между циклами опроса форума в секундах (рекомендуется не менее 120 во избежание флуд-лимитов)"
+  csrinru_phpbb3_u:
+    name: "Куки: phpbb3_u"
+    description: "ID пользователя из Cookies cs.rin.ru (необходимо для авторизованного поиска)"
+  csrinru_phpbb3_k:
+    name: "Куки: phpbb3_k"
+    description: "Ключ автологина из Cookies cs.rin.ru"
+  csrinru_phpbb3_sid:
+    name: "Куки: phpbb3_sid"
+    description: "Идентификатор текущей сессии из Cookies cs.rin.ru"
+  securitytoken:
+    name: "Куки: securitytoken"
+    description: "Токен антибот-проверки cs.rin.ru (если есть)"
+  securitytoken_expiration:
+    name: "Куки: securitytoken_expiration"
+    description: "Срок действия токена антибот-проверки (Unix timestamp)"

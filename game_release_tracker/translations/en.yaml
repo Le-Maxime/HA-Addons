@@ -1,0 +1,28 @@
+configuration:
+  telegram_token:
+    name: "Telegram Bot Token"
+    description: "Bot token obtained from @BotFather (e.g. 123456789:ABCdef...)"
+  telegram_chat_id:
+    name: "Admin Telegram Chat ID"
+    description: "Your numeric Telegram ID (get via @myidbot or @userinfobot)"
+  discord_webhook:
+    name: "Discord Webhook URL"
+    description: "Webhook URL to mirror release alerts to a Discord channel (optional)"
+  check_interval_seconds:
+    name: "Check Interval (seconds)"
+    description: "Polling interval in seconds (recommend >= 120 to prevent forum flood limits)"
+  csrinru_phpbb3_u:
+    name: "Cookie: phpbb3_u"
+    description: "User ID from cs.rin.ru cookies (required for authenticated search)"
+  csrinru_phpbb3_k:
+    name: "Cookie: phpbb3_k"
+    description: "Auto-login key from cs.rin.ru cookies"
+  csrinru_phpbb3_sid:
+    name: "Cookie: phpbb3_sid"
+    description: "Current session ID from cs.rin.ru cookies"
+  securitytoken:
+    name: "Cookie: securitytoken"
+    description: "Anti-bot challenge token from cs.rin.ru (if present)"
+  securitytoken_expiration:
+    name: "Cookie: securitytoken_expiration"
+    description: "Anti-bot challenge expiration timestamp"

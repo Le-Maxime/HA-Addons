@@ -8,6 +8,7 @@ on:
       - 'twitch_drops_miner/**'
       - 'free_games_claimer/**'
       - 'spoolman/**'
+      - 'game_release_tracker/**'
       - '.github/workflows/build.yaml'
   workflow_dispatch:
   workflow_call:
@@ -23,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        addon: [twitch_drops_miner, free_games_claimer, spoolman]
+        addon: [twitch_drops_miner, free_games_claimer, spoolman, game_release_tracker]
         arch: [amd64, aarch64]
     steps:
       - name: Checkout code
