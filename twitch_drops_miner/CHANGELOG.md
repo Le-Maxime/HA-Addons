@@ -24,6 +24,19 @@
 
 
 
+
+## v16.dev.213a9e4
+
+Updated Twitch Drops Miner to v16.dev.213a9e4
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/213a9e437b58d6fe407bddcfa4b63c642396bd21
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@213a9e437b58d6fe407bddcfa4b63c642396bd21: Fix browser viewer behind HTTPS reverse proxies
+
 ## v16.dev.dd3659c
 
 Updated Twitch Drops Miner to v16.dev.dd3659c
@@ -366,6 +379,19 @@ Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
 
 
 
+
+
+## v16.dev.213a9e4
+
+Updated Twitch Drops Miner to v16.dev.213a9e4
+
+Reference commit: https://github.com/fireph/TwitchDropsMiner/commit/213a9e437b58d6fe407bddcfa4b63c642396bd21
+
+Docker image at: https://hub.docker.com/r/dungfu/twitch-drops-miner
+
+### Changelog
+
+- fireph/TwitchDropsMiner@213a9e437b58d6fe407bddcfa4b63c642396bd21: Fix browser viewer behind HTTPS reverse proxies
 
 ## v16.dev.dd3659c
 
