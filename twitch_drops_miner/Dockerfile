@@ -3,8 +3,12 @@ FROM ${BUILD_FROM}
 
 USER root
 
-# Устанавливаем Nginx и создаем директорию для PID-файла
-RUN apk add --no-cache nginx && \
+# Устанавливаем Nginx и создаем директорию для PID-файла (поддержка Alpine и Debian)
+RUN if command -v apk >/dev/null 2>&1; then \
+        apk add --no-cache nginx; \
+    elif command -v apt-get >/dev/null 2>&1; then \
+        apt-get update && apt-get install -y --no-install-recommends nginx && rm -rf /var/lib/apt/lists/*; \
+    fi && \
     mkdir -p /run/nginx
 
 # Копируем конфигурацию Nginx и новый скрипт точки входа
