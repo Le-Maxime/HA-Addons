@@ -1,0 +1,21 @@
+name: "Antigravity Workspace"
+description: "AI-агент Antigravity (agy) для автономного написания кода, скриптов и глубокого анализа переписок в Telegram."
+version: "1.0.0"
+slug: "antigravity_workspace"
+url: "https://github.com/Le-Maxime/HA-Addons/tree/main/antigravity_workspace"
+image: "ghcr.io/le-maxime/{arch}-addon-antigravity_workspace"
+init: false
+arch:
+  - amd64
+  - aarch64
+boot: "auto"
+startup: "application"
+ingress: true
+ingress_port: 7681
+panel_icon: "mdi:robot"
+panel_title: "Antigravity"
+map:
+  - share:rw
+  - homeassistant:rw
+options: {}
+schema: {}
