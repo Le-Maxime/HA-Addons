@@ -597,7 +597,79 @@ def update_spoolman():
 
     update_root_readme_version('spoolman', target_version)
 
+
+# 4. ANTIGRAVITY WORKSPACE
+def update_antigravity_workspace():
+    print("\n--- Checking for Antigravity Workspace updates ---")
+    addon_dir = os.path.join(script_dir, 'antigravity_workspace')
+    config_path = os.path.join(addon_dir, 'config.yaml')
+    changelog_path = os.path.join(addon_dir, 'CHANGELOG.md')
+    
+    url = "https://api.github.com/repos/google-antigravity/antigravity-cli/releases/latest"
+    print(f"Fetching latest release from {url}...")
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            release_data = json.loads(response.read().decode('utf-8'))
+            tag_name = release_data.get('tag_name', '').strip()
+            target_version = tag_name.lstrip('v')
+            release_body = release_data.get('body', '').strip()
+    except Exception as e:
+        print(f"Error fetching latest release for Antigravity Workspace: {e}")
+        return
+
+    if not target_version:
+        print("Could not resolve Antigravity CLI target version.")
+        return
+
+    print(f"Latest Antigravity CLI upstream version: {target_version}")
+
+    current_version = ""
+    if os.path.exists(config_path):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            c_content = f.read()
+        match = re.search(r'version:\s*["\']?([^"\']+)["\']?', c_content)
+        if match:
+            current_version = match.group(1).lstrip('v')
+
+    print(f"Current local Antigravity Workspace version: {current_version}")
+
+    if current_version == target_version:
+        print("Antigravity Workspace is already up to date.")
+        return
+
+    print(f"Updating Antigravity Workspace from {current_version} to {target_version}...")
+
+    with open(config_path, 'r', encoding='utf-8') as f:
+        c_content = f.read()
+    new_c_content = re.sub(r'version:\s*["\']?[^"\']+["\']?', f'version: "{target_version}"', c_content)
+    with open(config_path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(new_c_content)
+    print("Updated antigravity_workspace/config.yaml.")
+
+    if not release_body:
+        release_body = f"Upstream Antigravity CLI release v{target_version}."
+    new_entry = f"## {target_version}\n\n{release_body}\n\n"
+    if os.path.exists(changelog_path):
+        with open(changelog_path, 'r', encoding='utf-8') as f:
+            ch_content = f.read()
+        match = re.search(r'(#\s*Changelog\s*)', ch_content, re.IGNORECASE)
+        if match:
+            header = match.group(1)
+            new_ch = ch_content.replace(header, f"{header}\n{new_entry}")
+        else:
+            new_ch = f"# Changelog\n\n{new_entry}" + ch_content
+    else:
+        new_ch = f"# Changelog\n\n{new_entry}"
+
+    with open(changelog_path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(new_ch)
+    print("Updated antigravity_workspace/CHANGELOG.md.")
+
+    update_root_readme_version('antigravity_workspace', target_version)
+
 if __name__ == "__main__":
     update_twitch_drops_miner()
     update_free_games_claimer()
     update_spoolman()
+    update_antigravity_workspace()
