@@ -19,21 +19,26 @@ fi
 # ==========================================
 # Autostart Telegram Bridge / Custom daemons
 # ==========================================
-if [ -f "/data/autostart.sh" ]; then
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] [Antigravity] Found /data/autostart.sh, executing in background..."
-    chmod +x /data/autostart.sh
-    /data/autostart.sh &
-elif [ -f "/data/scripts/telegram_bridge.py" ]; then
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] [Antigravity] Found /data/scripts/telegram_bridge.py, starting resilient bridge daemon..."
+BRIDGE_SCRIPT=""
+if [ -f "/data/scripts/telegram_bridge.py" ]; then
+    BRIDGE_SCRIPT="/data/scripts/telegram_bridge.py"
+elif [ -f "/share/antigravity_projects/telegram_bridge.py" ]; then
+    BRIDGE_SCRIPT="/share/antigravity_projects/telegram_bridge.py"
+elif [ -f "/data/autostart.sh" ]; then
+    BRIDGE_SCRIPT="/data/autostart.sh"
+fi
+
+if [ -n "$BRIDGE_SCRIPT" ]; then
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] [Antigravity] Found $BRIDGE_SCRIPT, launching resilient bridge daemon..."
     (
         while true; do
             echo "[$(date +'%Y-%m-%d %H:%M:%S')] [Bridge] Checking network availability..."
             until curl -s --connect-timeout 5 https://api.telegram.org > /dev/null 2>&1; do
-                echo "[$(date +'%Y-%m-%d %H:%M:%S')] [Bridge] Network not ready (router/internet starting up). Retrying in 5s..."
+                echo "[$(date +'%Y-%m-%d %H:%M:%S')] [Bridge] Network not ready. Retrying in 5s..."
                 sleep 5
             done
-            echo "[$(date +'%Y-%m-%d %H:%M:%S')] [Bridge] Network is UP! Launching telegram_bridge.py..."
-            python /data/scripts/telegram_bridge.py >> /data/bridge.log 2>&1 || true
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] [Bridge] Network is UP! Launching $BRIDGE_SCRIPT..."
+            python "$BRIDGE_SCRIPT" >> /data/bridge.log 2>&1 || true
             echo "[$(date +'%Y-%m-%d %H:%M:%S')] [Bridge] Process exited, restarting in 10s..."
             sleep 10
         done
