@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+import asyncio
+import os
+import json
+import logging
+import re
+import html
+import sys
+import aiohttp
+
+# Force unbuffered output so logs appear instantly
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    force=True
+)
+logger = logging.getLogger("telegram_bridge")
+
+CONFIG_PATH = "/share/antigravity_projects/config.json"
+WORKSPACE_DIR = "/data/workspace"
+SESSION_FLAG = "/data/.session_active"
+
+def load_config():
+    default_config = {
+        "bot_token": "",
+        "allowed_chat_ids": [144766346]
+    }
+    if not os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(default_config, f, indent=4)
+        return default_config
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading {CONFIG_PATH}: {e}")
+        return default_config
+
+def markdown_to_telegram_html(text: str) -> str:
+    """Converts standard Markdown into clean, Telegram-compatible HTML."""
+    if not text:
+        return ""
+
+    # 1. Protect and format code blocks: ```lang\ncode```
+    code_blocks = []
+    def save_code_block(match):
+        lang = match.group(1) or ""
+        code = match.group(2)
+        escaped_code = html.escape(code.strip("\r\n"))
+        idx = len(code_blocks)
+        if lang:
+            tag = f'<pre><code class="language-{html.escape(lang)}">{escaped_code}</code></pre>'
+        else:
+            tag = f'<pre>{escaped_code}</pre>'
+        code_blocks.append(tag)
+        return f"___CODE_BLOCK_{idx}___"
+
+    text = re.sub(r"```(\w+)?\r?\n?(.*?)```", save_code_block, text, flags=re.DOTALL)
+
+    # 2. Protect and format inline code: `code`
+    inline_codes = []
+    def save_inline_code(match):
+        code = match.group(1)
+        escaped_code = html.escape(code)
+        idx = len(inline_codes)
+        inline_codes.append(f"<code>{escaped_code}</code>")
+        return f"___INLINE_CODE_{idx}___"
+
+    text = re.sub(r"`([^`]+)`", save_inline_code, text)
+
+    # 3. Escape HTML entities for the rest of text
+    text = html.escape(text)
+
+    # 4. Headers (# Header, ## Header, ### Header) -> <b>Header</b>
+    text = re.sub(r"^(?:#{1,6})\s+(.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
+
+    # 5. Bold: **text** or __text__ -> <b>text</b>
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+    text = re.sub(r"__(.+?)__", r"<b>\1</b>", text)
+
+    # 6. Bullet lists: lines starting with * or - -> • bullet point
+    text = re.sub(r"^\s*[\*\-]\s+", "• ", text, flags=re.MULTILINE)
+
+    # 7. Italic: *text* or _text_ (when not part of a word or tag)
+    text = re.sub(r"(?<!\w)\*([^*]+?)\*(?!\w)", r"<i>\1</i>", text)
+    text = re.sub(r"(?<!\w)_([^_]+?)_(?!\w)", r"<i>\1</i>", text)
+
+    # 8. Restore code blocks and inline code
+    for idx, tag in enumerate(code_blocks):
+        text = text.replace(f"___CODE_BLOCK_{idx}___", tag)
+    for idx, tag in enumerate(inline_codes):
+        text = text.replace(f"___INLINE_CODE_{idx}___", tag)
+
+    return text
+
+async def run_antigravity(prompt: str, continue_session: bool) -> tuple[str, bool]:
+    cmd = ["agy", "-p", prompt, "--dangerously-skip-permissions"]
+    if continue_session:
+        cmd.append("-c")
+
+    logger.info(f"Executing Antigravity: {' '.join(cmd[:3])} (continue={continue_session})")
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=WORKSPACE_DIR,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await process.communicate()
+    out = stdout.decode("utf-8", errors="replace").strip()
+    err = stderr.decode("utf-8", errors="replace").strip()
+
+    if process.returncode != 0 and continue_session and ("no conversation" in err.lower() or "not found" in err.lower()):
+        logger.warning("Session not found with -c, falling back to fresh session...")
+        return await run_antigravity(prompt, continue_session=False)
+
+    if process.returncode != 0 and not out:
+        return f"⚠️ Ошибка выполнения:\n{err}", False
+
+    return out if out else "✅ Задача выполнена (без текстового вывода).", True
+
+async def send_tg_message(session, bot_token, chat_id, text, parse_mode="HTML"):
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text
+    }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+
+    try:
+        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            data = await resp.json()
+            if not data.get("ok") and parse_mode:
+                logger.warning(f"Telegram formatting error ({data.get('description')}), falling back to plain text...")
+                payload.pop("parse_mode", None)
+                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as fallback_resp:
+                    return await fallback_resp.json()
+            return data
+    except Exception as e:
+        logger.error(f"Error sending message to {chat_id}: {e}")
+        return None
+
+async def send_smart_reply(session, bot_token, chat_id, raw_text):
+    formatted = markdown_to_telegram_html(raw_text)
+
+    # If message fits standard length
+    if len(formatted) <= 4000:
+        await send_tg_message(session, bot_token, chat_id, formatted, parse_mode="HTML")
+        return
+
+    # If message is huge (>8000 chars), save and send as .md document
+    if len(raw_text) > 8000:
+        file_path = "/data/workspace/last_response.md"
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(raw_text)
+            url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
+            form_data = aiohttp.FormData()
+            form_data.add_field("chat_id", str(chat_id))
+            form_data.add_field("caption", "📄 Ответ слишком большой для одного сообщения, прикрепляю файлом:")
+            form_data.add_field("document", open(file_path, "rb"), filename="response.md")
+            async with session.post(url, data=form_data, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                data = await resp.json()
+                if data.get("ok"):
+                    return
+        except Exception as e:
+            logger.error(f"Failed to send response as document: {e}")
+
+    # Otherwise split into 4000-char chunks
+    for i in range(0, len(formatted), 4000):
+        chunk = formatted[i:i+4000]
+        await send_tg_message(session, bot_token, chat_id, chunk, parse_mode="HTML")
+
+async def delete_tg_message(session, bot_token, chat_id, message_id):
+    if not message_id:
+        return
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/deleteMessage"
+        async with session.post(url, json={"chat_id": chat_id, "message_id": message_id}, timeout=aiohttp.ClientTimeout(total=10)):
+            pass
+    except Exception:
+        pass
+
+async def main():
+    logger.info("Starting Telegram Bridge with clean HTML formatting...")
+    os.makedirs(WORKSPACE_DIR, exist_ok=True)
+
+    config = load_config()
+    bot_token = config.get("bot_token", "").strip()
+    allowed_chat_ids = config.get("allowed_chat_ids", [])
+
+    if not bot_token:
+        logger.warning(f"No bot_token found in {CONFIG_PATH}! Waiting...")
+        while not bot_token:
+            await asyncio.sleep(10)
+            config = load_config()
+            bot_token = config.get("bot_token", "").strip()
+
+    logger.info(f"Using Bot Token: {bot_token[:10]}... Allowed chat IDs: {allowed_chat_ids}")
+
+    async with aiohttp.ClientSession() as http_session:
+        try:
+            async with http_session.get(f"https://api.telegram.org/bot{bot_token}/getMe") as resp:
+                data = await resp.json()
+                if data.get("ok"):
+                    bot_name = data["result"].get("username")
+                    logger.info(f"Connected to Telegram as @{bot_name}!")
+        except Exception as e:
+            logger.error(f"Network error during getMe: {e}")
+
+        # Start offset at latest update on boot so it does not replay stale messages
+        offset = 0
+        try:
+            async with http_session.get(f"https://api.telegram.org/bot{bot_token}/getUpdates?offset=-1") as resp:
+                data = await resp.json()
+                if data.get("ok") and data.get("result"):
+                    offset = data["result"][-1]["update_id"] + 1
+                    logger.info(f"Initialized offset to {offset} (skipping old queued messages)")
+        except Exception as e:
+            logger.error(f"Error fetching initial offset: {e}")
+
+        while True:
+            try:
+                url = f"https://api.telegram.org/bot{bot_token}/getUpdates?offset={offset}&timeout=30"
+                async with http_session.get(url, timeout=aiohttp.ClientTimeout(total=45)) as resp:
+                    if resp.status != 200:
+                        await asyncio.sleep(5)
+                        continue
+                    updates_data = await resp.json()
+                    
+                    if not updates_data.get("ok"):
+                        await asyncio.sleep(5)
+                        continue
+
+                    for update in updates_data.get("result", []):
+                        offset = update["update_id"] + 1
+                        message = update.get("message")
+                        if not message or not message.get("text"):
+                            continue
+
+                        chat_id = message["chat"]["id"]
+                        text = message["text"].strip()
+
+                        if allowed_chat_ids and chat_id not in allowed_chat_ids:
+                            logger.warning(f"Unauthorized access attempt from chat_id {chat_id}")
+                            continue
+
+                        logger.info(f"Received message from {chat_id}: {text[:50]}...")
+
+                        if text in ["/start", "/help"]:
+                            welcome = (
+                                "🤖 <b>Antigravity AI Agent</b> подключен!\n\n"
+                                "🧠 <b>Память диалога:</b> включена (агент помнит весь контекст).\n\n"
+                                "<b>Команды:</b>\n"
+                                "• <code>/new</code> или <code>/clear</code> — сбросить контекст и начать новую тему\n"
+                                "• Любое сообщение — задача для агента."
+                            )
+                            await send_tg_message(http_session, bot_token, chat_id, welcome, parse_mode="HTML")
+                            continue
+
+                        if text.lower() in ["/new", "/clear", "/reset"]:
+                            if os.path.exists(SESSION_FLAG):
+                                try:
+                                    os.remove(SESSION_FLAG)
+                                except Exception:
+                                    pass
+                            await send_tg_message(http_session, bot_token, chat_id, "🧹 <b>Память диалога очищена!</b> Следующее сообщение начнет тему с чистого листа.", parse_mode="HTML")
+                            continue
+
+                        # Temporary status indicator
+                        status_resp = await send_tg_message(http_session, bot_token, chat_id, "⏳ <i>Агент выполняет задачу...</i>", parse_mode="HTML")
+                        status_msg_id = status_resp.get("result", {}).get("message_id") if status_resp else None
+
+                        is_active = os.path.exists(SESSION_FLAG)
+                        output, success = await run_antigravity(text, continue_session=is_active)
+
+                        if success and not is_active:
+                            with open(SESSION_FLAG, "w") as f:
+                                f.write("1")
+
+                        # Remove the temporary status message
+                        await delete_tg_message(http_session, bot_token, chat_id, status_msg_id)
+
+                        # Send formatted smart reply
+                        await send_smart_reply(http_session, bot_token, chat_id, output)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in update polling loop: {e}")
+                await asyncio.sleep(5)
+
+if __name__ == "__main__":
+    asyncio.run(main())
