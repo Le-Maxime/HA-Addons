@@ -6,6 +6,9 @@ import logging
 import re
 import html
 import sys
+import glob
+import subprocess
+import traceback
 import aiohttp
 
 # Force unbuffered output so logs appear instantly
@@ -38,6 +41,20 @@ def load_config():
     except Exception as e:
         logger.error(f"Error loading {CONFIG_PATH}: {e}")
         return default_config
+
+def clean_stale_locks():
+    """Removes stale lock files if a previous process was abruptly killed."""
+    try:
+        patterns = ["/data/**/.lock", "/data/**/*.lock", "/data/.gemini/**/*.lock"]
+        for p in patterns:
+            for lock in glob.glob(p, recursive=True):
+                logger.warning(f"Removing stale lock file: {lock}")
+                try:
+                    os.remove(lock)
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning(f"Error scanning lock files: {e}")
 
 def markdown_to_telegram_html(text: str) -> str:
     """Converts standard Markdown into clean, Telegram-compatible HTML."""
@@ -97,30 +114,56 @@ def markdown_to_telegram_html(text: str) -> str:
     return text
 
 async def run_antigravity(prompt: str, continue_session: bool) -> tuple[str, bool]:
-    cmd = ["agy", "-p", prompt, "--dangerously-skip-permissions"]
+    # Proper flag order: options first, -p <prompt> last
+    cmd = ["agy", "--dangerously-skip-permissions", "--print-timeout", "120s"]
     if continue_session:
         cmd.append("-c")
+    cmd.extend(["-p", prompt])
 
-    logger.info(f"Executing Antigravity: {' '.join(cmd[:3])} (continue={continue_session})")
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=WORKSPACE_DIR,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-    stdout, stderr = await process.communicate()
-    out = stdout.decode("utf-8", errors="replace").strip()
-    err = stderr.decode("utf-8", errors="replace").strip()
+    logger.info(f"Executing Antigravity: agy (continue={continue_session}) prompt={prompt[:40]}...")
+    
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=WORKSPACE_DIR,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        # Outer timeout safety guard (130s)
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=130.0)
+        except asyncio.TimeoutError:
+            logger.error("Antigravity process timed out after 130s! Terminating...")
+            try:
+                process.kill()
+                await process.wait()
+            except Exception as pe:
+                logger.error(f"Error killing timed out process: {pe}")
+            return "⏱️ Превышено время ожидания ответа агента (2 мин). Возможно, задача слишком сложная. Попробуйте разбить запрос или начать с /new.", False
 
-    if process.returncode != 0 and continue_session and ("no conversation" in err.lower() or "not found" in err.lower()):
-        logger.warning("Session not found with -c, falling back to fresh session...")
-        return await run_antigravity(prompt, continue_session=False)
+        out = stdout.decode("utf-8", errors="replace").strip()
+        err = stderr.decode("utf-8", errors="replace").strip()
+        logger.info(f"Antigravity finished with code {process.returncode}. Output: {len(out)} chars, Stderr: {len(err)} chars")
+        if err:
+            logger.info(f"Antigravity stderr: {err[:200]}")
 
-    if process.returncode != 0 and not out:
-        return f"⚠️ Ошибка выполнения:\n{err}", False
+        # If previous session context failed or was broken, retry with fresh session
+        if process.returncode != 0 and continue_session:
+            err_lower = err.lower()
+            if any(k in err_lower for k in ["no conversation", "not found", "not active", "corrupt", "failed to resume"]):
+                logger.warning("Session failed with -c, falling back to clean session...")
+                return await run_antigravity(prompt, continue_session=False)
 
-    return out if out else "✅ Задача выполнена (без текстового вывода).", True
+        if process.returncode != 0 and not out:
+            return f"⚠️ Ошибка выполнения:\n{err}", False
+
+        return out if out else "✅ Задача выполнена (без текстового вывода).", True
+
+    except Exception as e:
+        logger.error(f"Exception during run_antigravity: {e}\n{traceback.format_exc()}")
+        return f"⚠️ Системная ошибка: {e}", False
 
 async def send_tg_message(session, bot_token, chat_id, text, parse_mode="HTML"):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -134,11 +177,13 @@ async def send_tg_message(session, bot_token, chat_id, text, parse_mode="HTML"):
     try:
         async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as resp:
             data = await resp.json()
-            if not data.get("ok") and parse_mode:
-                logger.warning(f"Telegram formatting error ({data.get('description')}), falling back to plain text...")
-                payload.pop("parse_mode", None)
-                async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as fallback_resp:
-                    return await fallback_resp.json()
+            if not data.get("ok"):
+                logger.warning(f"Telegram API warning: {data.get('description')}")
+                if parse_mode:
+                    logger.warning(f"Retrying plain text without {parse_mode}...")
+                    payload.pop("parse_mode", None)
+                    async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=30)) as fallback_resp:
+                        return await fallback_resp.json()
             return data
     except Exception as e:
         logger.error(f"Error sending message to {chat_id}: {e}")
@@ -147,9 +192,10 @@ async def send_tg_message(session, bot_token, chat_id, text, parse_mode="HTML"):
 async def send_smart_reply(session, bot_token, chat_id, raw_text):
     formatted = markdown_to_telegram_html(raw_text)
 
-    # If message fits standard length
+    # Standard length: <= 4000 characters
     if len(formatted) <= 4000:
-        await send_tg_message(session, bot_token, chat_id, formatted, parse_mode="HTML")
+        res = await send_tg_message(session, bot_token, chat_id, formatted, parse_mode="HTML")
+        logger.info(f"Sent reply ({len(formatted)} chars), status: ok={res.get('ok') if res else False}")
         return
 
     # If message is huge (>8000 chars), save and send as .md document
@@ -166,6 +212,7 @@ async def send_smart_reply(session, bot_token, chat_id, raw_text):
             async with session.post(url, data=form_data, timeout=aiohttp.ClientTimeout(total=60)) as resp:
                 data = await resp.json()
                 if data.get("ok"):
+                    logger.info("Sent reply as markdown document")
                     return
         except Exception as e:
             logger.error(f"Failed to send response as document: {e}")
@@ -174,6 +221,7 @@ async def send_smart_reply(session, bot_token, chat_id, raw_text):
     for i in range(0, len(formatted), 4000):
         chunk = formatted[i:i+4000]
         await send_tg_message(session, bot_token, chat_id, chunk, parse_mode="HTML")
+    logger.info("Sent chunked reply")
 
 async def delete_tg_message(session, bot_token, chat_id, message_id):
     if not message_id:
@@ -186,8 +234,10 @@ async def delete_tg_message(session, bot_token, chat_id, message_id):
         pass
 
 async def main():
-    logger.info("Starting Telegram Bridge with clean HTML formatting...")
+    logger.info("Starting Telegram Bridge (Production-grade)...")
     os.makedirs(WORKSPACE_DIR, exist_ok=True)
+
+    clean_stale_locks()
 
     config = load_config()
     bot_token = config.get("bot_token", "").strip()
@@ -254,7 +304,7 @@ async def main():
                         if text in ["/start", "/help"]:
                             welcome = (
                                 "🤖 <b>Antigravity AI Agent</b> подключен!\n\n"
-                                "🧠 <b>Память диалога:</b> включена (агент помнит весь контекст).\n\n"
+                                "🧠 <b>Память диалога:</b> включена (агент помнит контекст всей беседы).\n\n"
                                 "<b>Команды:</b>\n"
                                 "• <code>/new</code> или <code>/clear</code> — сбросить контекст и начать новую тему\n"
                                 "• Любое сообщение — задача для агента."
@@ -268,6 +318,7 @@ async def main():
                                     os.remove(SESSION_FLAG)
                                 except Exception:
                                     pass
+                            clean_stale_locks()
                             await send_tg_message(http_session, bot_token, chat_id, "🧹 <b>Память диалога очищена!</b> Следующее сообщение начнет тему с чистого листа.", parse_mode="HTML")
                             continue
 
@@ -291,7 +342,7 @@ async def main():
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error in update polling loop: {e}")
+                logger.error(f"Error in update polling loop: {e}\n{traceback.format_exc()}")
                 await asyncio.sleep(5)
 
 if __name__ == "__main__":
