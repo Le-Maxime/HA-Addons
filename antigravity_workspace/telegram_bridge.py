@@ -29,7 +29,9 @@ SESSION_FLAG = "/data/.session_active"
 def load_config():
     default_config = {
         "bot_token": "",
-        "allowed_chat_ids": [144766346]
+        "allowed_chat_ids": [],
+        "tg_api_id": "",
+        "tg_api_hash": ""
     }
     if not os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -41,6 +43,62 @@ def load_config():
     except Exception as e:
         logger.error(f"Error loading {CONFIG_PATH}: {e}")
         return default_config
+
+def ensure_tg_tools_integrated():
+    """Creates global tg-read / tg-login wrappers and updates AGENTS.md for agy."""
+    reader_candidates = [
+        "/share/antigravity_projects/tg_reader.py",
+        "/data/scripts/tg_reader.py"
+    ]
+    reader_path = next((p for p in reader_candidates if os.path.exists(p)), None)
+    if not reader_path:
+        return
+
+    try:
+        with open("/usr/local/bin/tg-read", "w", encoding="utf-8") as f:
+            f.write(f"#!/bin/bash\nexec /opt/venv/bin/python {reader_path} \"$@\"\n")
+        os.chmod("/usr/local/bin/tg-read", 0o755)
+
+        with open("/usr/local/bin/tg-login", "w", encoding="utf-8") as f:
+            f.write(f"#!/bin/bash\nexec /opt/venv/bin/python {reader_path} login \"$@\"\n")
+        os.chmod("/usr/local/bin/tg-login", 0o755)
+        logger.info(f"Installed tg-read & tg-login wrappers -> {reader_path}")
+    except Exception as e:
+        logger.warning(f"Failed to install tg-read wrappers: {e}")
+
+    begin_marker = "<!-- BEGIN ANTIGRAVITY TG_READER -->"
+    end_marker = "<!-- END ANTIGRAVITY TG_READER -->"
+    managed_block = f"""{begin_marker}
+## Доступ к Telegram-перепискам пользователя (`tg-read`)
+У тебя есть встроенный CLI-инструмент `tg-read` (Telethon UserBot, только чтение) для анализа личных переписок, групп и каналов пользователя.
+Когда пользователь просит прочитать, найти, пересказать или проанализировать сообщения/чаты/каналы в Telegram — вызывай `tg-read` через bash:
+- `tg-read status` — проверить статус авторизации UserBot
+- `tg-read dialogs --limit 30 [--query "текст"] [--type user|group|supergroup|channel]` — список диалогов (ID, название, @username)
+- `tg-read history "<ID, @username или часть названия>" --limit 50 [--days 7] [--search "слово"]` — история сообщений в хронологическом порядке (поддерживает `"me"` / `"избранное"`)
+- `tg-read search "<запрос>" --limit 30 [--days 7]` — глобальный поиск по всем чатам
+
+Правила:
+- Если `tg-read` сообщает, что сессия не авторизована, скажи пользователю открыть вкладку **Antigravity** в боковом меню Home Assistant и один раз выполнить в терминале команду `tg-login` (ввести телефон и код из Telegram).
+- Если имя чата неоднозначно или не найдено, сначала выполни `tg-read dialogs --query "..."`, чтобы увидеть точный ID и название.
+{end_marker}"""
+
+    for agents_path in ["/data/workspace/AGENTS.md", "/data/.gemini/AGENTS.md"]:
+        try:
+            os.makedirs(os.path.dirname(agents_path), exist_ok=True)
+            existing = ""
+            if os.path.exists(agents_path):
+                with open(agents_path, "r", encoding="utf-8") as f:
+                    existing = f.read()
+            if begin_marker in existing and end_marker in existing:
+                pattern = re.escape(begin_marker) + r".*?" + re.escape(end_marker)
+                updated = re.sub(pattern, lambda _: managed_block, existing, flags=re.DOTALL)
+            else:
+                sep = "\n\n" if existing.strip() else ""
+                updated = existing.rstrip() + sep + managed_block + "\n"
+            with open(agents_path, "w", encoding="utf-8") as f:
+                f.write(updated)
+        except Exception as e:
+            logger.warning(f"Failed updating {agents_path}: {e}")
 
 def clean_stale_locks():
     """Removes stale lock files if a previous process was abruptly killed."""
@@ -238,6 +296,7 @@ async def main():
     os.makedirs(WORKSPACE_DIR, exist_ok=True)
 
     clean_stale_locks()
+    ensure_tg_tools_integrated()
 
     config = load_config()
     bot_token = config.get("bot_token", "").strip()
@@ -289,30 +348,48 @@ async def main():
                     for update in updates_data.get("result", []):
                         offset = update["update_id"] + 1
                         message = update.get("message")
-                        if not message or not message.get("text"):
+                        if not message:
                             continue
 
                         chat_id = message["chat"]["id"]
-                        text = message["text"].strip()
+                        raw_text = (message.get("text") or message.get("caption") or "").strip()
+                        if not raw_text:
+                            continue
 
                         if allowed_chat_ids and chat_id not in allowed_chat_ids:
                             logger.warning(f"Unauthorized access attempt from chat_id {chat_id}")
                             continue
 
-                        logger.info(f"Received message from {chat_id}: {text[:50]}...")
+                        # Preserve forwarded origin metadata if user forwards a message to the bot
+                        fwd_prefix = ""
+                        fwd_origin = message.get("forward_origin")
+                        if fwd_origin:
+                            origin_chat = fwd_origin.get("chat") or fwd_origin.get("sender_user") or {}
+                            origin_name = origin_chat.get("title") or origin_chat.get("first_name") or fwd_origin.get("sender_user_name") or ""
+                            if origin_name:
+                                fwd_prefix = f"[Переслано из: {origin_name}]\n"
+                        elif message.get("forward_from_chat") or message.get("forward_from"):
+                            fc = message.get("forward_from_chat") or message.get("forward_from") or {}
+                            origin_name = fc.get("title") or fc.get("first_name") or ""
+                            if origin_name:
+                                fwd_prefix = f"[Переслано из: {origin_name}]\n"
 
-                        if text in ["/start", "/help"]:
+                        text = f"{fwd_prefix}{raw_text}" if fwd_prefix and not raw_text.startswith("/") else raw_text
+                        logger.info(f"Received message from {chat_id}: {raw_text[:50]}...")
+
+                        if raw_text in ["/start", "/help"]:
                             welcome = (
                                 "🤖 <b>Antigravity AI Agent</b> подключен!\n\n"
-                                "🧠 <b>Память диалога:</b> включена (агент помнит контекст всей беседы).\n\n"
+                                "🧠 <b>Память диалога:</b> включена (агент помнит контекст всей беседы).\n"
+                                "💬 <b>Чтение Telegram-чатов:</b> инструмент <code>tg-read</code> подключён.\n\n"
                                 "<b>Команды:</b>\n"
                                 "• <code>/new</code> или <code>/clear</code> — сбросить контекст и начать новую тему\n"
-                                "• Любое сообщение — задача для агента."
+                                "• Любое сообщение или пересланный пост — задача для агента."
                             )
                             await send_tg_message(http_session, bot_token, chat_id, welcome, parse_mode="HTML")
                             continue
 
-                        if text.lower() in ["/new", "/clear", "/reset"]:
+                        if raw_text.lower() in ["/new", "/clear", "/reset"]:
                             if os.path.exists(SESSION_FLAG):
                                 try:
                                     os.remove(SESSION_FLAG)
