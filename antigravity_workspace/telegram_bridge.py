@@ -10,6 +10,7 @@ import html
 import sys
 import glob
 import subprocess
+import time
 import traceback
 from typing import Awaitable, Callable
 import aiohttp
@@ -27,7 +28,10 @@ logger = logging.getLogger("telegram_bridge")
 
 CONFIG_PATH = "/share/antigravity_projects/config.json"
 WORKSPACE_DIR = "/data/workspace"
+MEDIA_DIR = os.path.join(WORKSPACE_DIR, "tg_media")
 SESSION_FLAG = "/data/.session_active"
+MAX_BOT_FILE_BYTES = 20 * 1024 * 1024  # Telegram Bot API getFile limit
+MEDIA_RETENTION_SEC = 24 * 3600
 TEXT_DEBOUNCE_SEC = 1.0
 FORWARD_DEBOUNCE_SEC = 2.5
 MAX_BATCH_WAIT_SEC = 10.0
@@ -84,8 +88,9 @@ def ensure_tg_tools_integrated():
 - `tg-read search "<запрос>" --limit 30 [--days 7]` — глобальный поиск по всем чатам
 
 Правила:
-- Если `tg-read` сообщает, что сессия не авторизована, скажи пользователю открыть вкладку **Antigravity** в боковом меню Home Assistant и один раз выполнить в терминале команду `tg-login` (ввести телефон и код из Telegram).
+- Если `tg-read` сообщает, что сессия не авторизована, скажи пользователю, как авторизоваться (`tg-login --phone / --code / --password` или `tg-login` в веб-терминале **Antigravity** в Home Assistant).
 - Если имя чата неоднозначно или не найдено, сначала выполни `tg-read dialogs --query "..."`, чтобы увидеть точный ID и название.
+- Если пользователь прислал или переслал фото, стикер, видео, голосовое или документ (путь в `/data/workspace/tg_media/`), открой этот файл через `read_file`, чтобы увидеть и проанализировать его содержимое.
 {end_marker}"""
 
     for agents_path in ["/data/workspace/AGENTS.md", "/data/.gemini/AGENTS.md"]:
@@ -387,6 +392,18 @@ async def delete_tg_message(session, bot_token, chat_id, message_id):
         pass
 
 @dataclass
+class MediaSpec:
+    """Downloadable Telegram media descriptor attached to a message."""
+
+    kind: str
+    label: str
+    file_id: str
+    preferred_name: str
+    default_ext: str
+    file_size: int | None = None
+
+
+@dataclass
 class IncomingItem:
     """Normalized incoming Telegram message queued for batch processing."""
 
@@ -394,6 +411,9 @@ class IncomingItem:
     is_forward: bool = False
     forward_header: str = ""
     has_media_group: bool = False
+    media_specs: list[MediaSpec] = field(default_factory=list)
+    media_notes: list[str] = field(default_factory=list)
+    saved_media: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -404,6 +424,16 @@ class ChatState:
     last_item_at: float = 0.0
     worker_task: asyncio.Task | None = None
     generation: int = 0
+
+
+_MEDIA_FIELDS = (
+    ("video", "Видео", "video.mp4", ".mp4"),
+    ("animation", "GIF/Анимация", "animation.mp4", ".mp4"),
+    ("video_note", "Видеосообщение", "video_note.mp4", ".mp4"),
+    ("voice", "Голосовое сообщение", "voice.ogg", ".ogg"),
+    ("audio", "Аудио", "audio.mp3", ".mp3"),
+    ("document", "Файл", "document.bin", ".bin"),
+)
 
 
 def _format_user_label(user: dict) -> str:
@@ -455,63 +485,284 @@ def extract_forward_metadata(message: dict) -> tuple[bool, str]:
     return True, f"[Переслано от {label}{time_suffix}]"
 
 
-def _extract_media_placeholder(message: dict, include_sticker: bool) -> str:
-    """Returns a readable fallback tag when a message has media without text/caption."""
-    if message.get("photo"):
-        return "[Фото]"
-    if message.get("video"):
-        return "[Видео]"
-    if message.get("voice"):
-        return "[Голосовое сообщение]"
-    if message.get("audio"):
-        return "[Аудио]"
-    if message.get("video_note"):
-        return "[Видеосообщение]"
-    doc = message.get("document")
-    if isinstance(doc, dict):
-        fname = doc.get("file_name")
-        return f"[Файл: {fname}]" if fname else "[Файл]"
-    if include_sticker and isinstance(message.get("sticker"), dict):
-        emoji = message["sticker"].get("emoji") or ""
-        return f"[Стикер {emoji}]".strip()
-    return ""
+def _add_oversized_or_spec(
+    specs: list[MediaSpec],
+    notes: list[str],
+    kind: str,
+    label: str,
+    obj: dict,
+    preferred_name: str,
+    default_ext: str,
+) -> None:
+    """Queues media for download or falls back to its thumbnail if over the 20 MB Bot API cap."""
+    file_id = obj.get("file_id")
+    if not file_id:
+        return
+    file_size = obj.get("file_size")
+    if isinstance(file_size, int) and file_size > MAX_BOT_FILE_BYTES:
+        mb = file_size / (1024 * 1024)
+        notes.append(f"[{label} ({mb:.1f} МБ) превышает лимит 20 МБ Telegram Bot API]")
+        thumb = obj.get("thumbnail") or obj.get("thumb")
+        if isinstance(thumb, dict) and thumb.get("file_id"):
+            specs.append(MediaSpec(
+                kind=f"{kind}_thumb",
+                label=f"Превью ({label})",
+                file_id=thumb["file_id"],
+                preferred_name="thumb.jpg",
+                default_ext=".jpg",
+                file_size=thumb.get("file_size"),
+            ))
+        return
+
+    specs.append(MediaSpec(
+        kind=kind,
+        label=label,
+        file_id=file_id,
+        preferred_name=preferred_name,
+        default_ext=default_ext,
+        file_size=file_size if isinstance(file_size, int) else None,
+    ))
+
+
+def select_media_specs(message: dict) -> tuple[list[MediaSpec], list[str]]:
+    """Extracts downloadable media specs and descriptive fallback notes from a Telegram message."""
+    specs: list[MediaSpec] = []
+    notes: list[str] = []
+
+    photos = message.get("photo")
+    if isinstance(photos, list) and photos:
+        eligible = [p for p in photos if isinstance(p, dict) and (p.get("file_size") or 0) <= MAX_BOT_FILE_BYTES]
+        chosen = eligible[-1] if eligible else photos[-1]
+        if isinstance(chosen, dict) and chosen.get("file_id"):
+            _add_oversized_or_spec(specs, notes, "photo", "Фото", chosen, "photo.jpg", ".jpg")
+
+    sticker = message.get("sticker")
+    if isinstance(sticker, dict) and sticker.get("file_id"):
+        emoji = (sticker.get("emoji") or "").strip()
+        suffix = f" {emoji}" if emoji else ""
+        thumb = sticker.get("thumbnail") or sticker.get("thumb")
+        if sticker.get("is_animated"):
+            if isinstance(thumb, dict) and thumb.get("file_id"):
+                _add_oversized_or_spec(
+                    specs,
+                    notes,
+                    "sticker_thumb",
+                    f"Анимированный стикер{suffix} (превью)",
+                    thumb,
+                    "sticker_thumb.webp",
+                    ".webp",
+                )
+            else:
+                notes.append(f"[Анимированный стикер{suffix}]")
+        elif sticker.get("is_video"):
+            _add_oversized_or_spec(
+                specs,
+                notes,
+                "sticker_video",
+                f"Видеостикер{suffix}",
+                sticker,
+                "sticker.webm",
+                ".webm",
+            )
+            if isinstance(thumb, dict) and thumb.get("file_id"):
+                _add_oversized_or_spec(
+                    specs,
+                    notes,
+                    "sticker_thumb",
+                    f"Кадр стикера{suffix}",
+                    thumb,
+                    "sticker_thumb.jpg",
+                    ".jpg",
+                )
+        else:
+            _add_oversized_or_spec(
+                specs,
+                notes,
+                "sticker",
+                f"Стикер{suffix}",
+                sticker,
+                "sticker.webp",
+                ".webp",
+            )
+
+    for field_key, display_label, fallback_name, default_ext in _MEDIA_FIELDS:
+        obj = message.get(field_key)
+        if not isinstance(obj, dict) or not obj.get("file_id"):
+            continue
+        fname = str(obj.get("file_name") or fallback_name).strip()
+        label = f"{display_label}: {fname}" if field_key in ("document", "audio") and obj.get("file_name") else display_label
+        _add_oversized_or_spec(specs, notes, field_key, label, obj, fname, default_ext)
+
+    return specs, notes
 
 
 def extract_incoming_item(message: dict) -> IncomingItem | None:
-    """Parses a Telegram update message into an IncomingItem, or None if unsupported."""
+    """Parses a Telegram update message into an IncomingItem, or None if empty."""
     is_forward, forward_header = extract_forward_metadata(message)
     raw_text = (message.get("text") or message.get("caption") or "").strip()
-    if not raw_text:
-        raw_text = _extract_media_placeholder(message, include_sticker=is_forward)
-    if not raw_text:
+    media_specs, media_notes = select_media_specs(message)
+    if not raw_text and not media_specs and not media_notes:
         return None
     return IncomingItem(
         text=raw_text,
         is_forward=is_forward,
         forward_header=forward_header,
         has_media_group=bool(message.get("media_group_id")),
+        media_specs=media_specs,
+        media_notes=media_notes,
     )
+
+
+def _sanitize_media_filename(preferred_name: str, remote_path: str, default_ext: str) -> str:
+    """Builds a safe basename preserving a useful extension for agent file inspection."""
+    raw_base = os.path.basename(preferred_name or remote_path or "media")
+    raw_stem, raw_ext = os.path.splitext(raw_base)
+    safe_stem = re.sub(r"[^A-Za-z0-9_-]", "_", raw_stem).strip("_-")[:40] or "media"
+    remote_ext = os.path.splitext(remote_path or "")[1].lower()
+    if raw_ext and raw_ext.lower() != ".bin":
+        ext = raw_ext.lower()
+    else:
+        ext = remote_ext or default_ext
+    safe_ext = re.sub(r"[^a-z0-9.]", "", ext)[:12]
+    return f"{safe_stem}{safe_ext}"
+
+
+def cleanup_old_media(media_dir: str = MEDIA_DIR, max_age_sec: int = MEDIA_RETENTION_SEC) -> None:
+    """Removes expired temporary Telegram media files to keep /data/workspace clean."""
+    if not os.path.isdir(media_dir):
+        return
+    cutoff = time.time() - max_age_sec
+    try:
+        with os.scandir(media_dir) as entries:
+            for entry in entries:
+                if entry.is_file() and entry.stat().st_mtime < cutoff:
+                    try:
+                        os.remove(entry.path)
+                    except Exception:
+                        pass
+    except Exception as e:
+        logger.warning(f"Error cleaning {media_dir}: {e}")
+
+
+async def download_tg_media_file(
+    session: aiohttp.ClientSession,
+    bot_token: str,
+    spec: MediaSpec,
+    prefix: str,
+    media_dir: str = MEDIA_DIR,
+) -> tuple[str | None, str]:
+    """Downloads a Telegram media file via Bot API getFile into media_dir."""
+    get_file_url = f"https://api.telegram.org/bot{bot_token}/getFile?file_id={spec.file_id}"
+    try:
+        async with session.get(get_file_url, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+            meta = await resp.json()
+        if not meta.get("ok"):
+            desc = meta.get("description") or "getFile failed"
+            return None, desc
+
+        file_info = meta.get("result") or {}
+        remote_path = file_info.get("file_path") or ""
+        remote_size = file_info.get("file_size") or 0
+        if not remote_path:
+            return None, "missing file_path"
+        if remote_size > MAX_BOT_FILE_BYTES:
+            return None, "превышен лимит 20 МБ"
+
+        os.makedirs(media_dir, exist_ok=True)
+        safe_name = _sanitize_media_filename(spec.preferred_name, remote_path, spec.default_ext)
+        dest_path = os.path.join(media_dir, f"{prefix}_{safe_name}")
+        dl_url = f"https://api.telegram.org/file/bot{bot_token}/{remote_path}"
+
+        total = 0
+        async with session.get(dl_url, timeout=aiohttp.ClientTimeout(total=90)) as dl_resp:
+            if dl_resp.status != 200:
+                return None, f"HTTP {dl_resp.status}"
+            with open(dest_path, "wb") as out_file:
+                async for chunk in dl_resp.content.iter_chunked(65536):
+                    total += len(chunk)
+                    if total > MAX_BOT_FILE_BYTES + 1024 * 1024:
+                        raise ValueError("file exceeds download limit")
+                    out_file.write(chunk)
+        return dest_path, ""
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.warning(f"Failed downloading Telegram media ({spec.label}): {e}")
+        return None, str(e)
+
+
+async def download_batch_media(
+    session: aiohttp.ClientSession,
+    bot_token: str,
+    batch: list[IncomingItem],
+    media_dir: str = MEDIA_DIR,
+) -> None:
+    """Concurrently downloads all queued media attachments for a message batch."""
+    tasks = []
+    targets: list[tuple[IncomingItem, MediaSpec]] = []
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    for msg_idx, item in enumerate(batch, start=1):
+        for spec_idx, spec in enumerate(item.media_specs, start=1):
+            prefix = f"{stamp}_{msg_idx:02d}_{spec_idx:02d}"
+            targets.append((item, spec))
+            tasks.append(download_tg_media_file(session, bot_token, spec, prefix, media_dir=media_dir))
+
+    if not tasks:
+        return
+
+    cleanup_old_media(media_dir)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for (item, spec), res in zip(targets, results):
+        if isinstance(res, Exception):
+            item.media_notes.append(f"[{spec.label} — ошибка скачивания: {res}]")
+            continue
+        local_path, err = res
+        if local_path:
+            item.saved_media.append((spec.label, local_path))
+        else:
+            item.media_notes.append(f"[{spec.label} — не удалось скачать: {err}]")
+
+
+def _format_item_body(item: IncomingItem) -> str:
+    """Formats a single item's downloaded media references, notes, and text/caption."""
+    lines = [f"[{label} | файл: {path}]" for label, path in item.saved_media]
+    lines.extend(item.media_notes)
+    if item.text:
+        if lines:
+            lines.append(f"Подпись: {item.text}")
+        else:
+            lines.append(item.text)
+    return "\n".join(lines)
 
 
 def format_message_batch(items: list[IncomingItem]) -> str:
     """Combines one or more debounced messages into a clean prompt for Antigravity."""
+    has_saved_media = any(it.saved_media for it in items)
+
     if len(items) == 1:
         item = items[0]
-        if item.is_forward:
-            return f"{item.forward_header}:\n{item.text}"
-        return item.text
+        body = _format_item_body(item)
+        prompt = f"{item.forward_header}:\n{body}" if item.is_forward else body
+    else:
+        has_forwards = any(it.is_forward for it in items)
+        parts = []
+        for it in items:
+            body = _format_item_body(it)
+            if it.is_forward:
+                parts.append(f"{it.forward_header}:\n{body}")
+            elif has_forwards:
+                parts.append(f"[Комментарий/запрос пользователя]:\n{body}")
+            else:
+                parts.append(body)
+        prompt = "\n\n".join(parts)
 
-    has_forwards = any(it.is_forward for it in items)
-    if not has_forwards:
-        return "\n\n".join(it.text for it in items)
-
-    parts = []
-    for it in items:
-        if it.is_forward:
-            parts.append(f"{it.forward_header}:\n{it.text}")
-        else:
-            parts.append(f"[Комментарий/запрос пользователя]:\n{it.text}")
-    return "\n\n".join(parts)
+    if has_saved_media:
+        prompt += (
+            "\n\n[Инструкция: у сообщения есть сохранённые медиафайлы/документы; "
+            "обязательно открой указанные выше пути через read_file, чтобы изучить их содержимое.]"
+        )
+    return prompt
 
 
 class ChatCoordinator:
@@ -519,7 +770,7 @@ class ChatCoordinator:
 
     def __init__(
         self,
-        handler: Callable[[int, str, int, int], Awaitable[None]],
+        handler: Callable[[int, list[IncomingItem], int], Awaitable[None]],
         text_debounce: float = TEXT_DEBOUNCE_SEC,
         forward_debounce: float = FORWARD_DEBOUNCE_SEC,
         max_batch_wait: float = MAX_BATCH_WAIT_SEC,
@@ -589,16 +840,17 @@ class ChatCoordinator:
 
             batch = state.buffer[:]
             state.buffer.clear()
-            prompt = format_message_batch(batch)
             gen = state.generation
-            await self._handler(chat_id, prompt, gen, len(batch))
+            await self._handler(chat_id, batch, gen)
 
 
 async def main():
     logger.info("Starting Telegram Bridge (Production-grade)...")
     os.makedirs(WORKSPACE_DIR, exist_ok=True)
+    os.makedirs(MEDIA_DIR, exist_ok=True)
 
     clean_stale_locks()
+    cleanup_old_media(MEDIA_DIR)
     ensure_tg_tools_integrated()
 
     config = load_config()
@@ -624,12 +876,22 @@ async def main():
         except Exception as e:
             logger.error(f"Network error during getMe: {e}")
 
-        async def handle_batched_prompt(chat_id: int, prompt: str, generation: int, count: int) -> None:
-            logger.info(f"Processing batch of {count} message(s) for {chat_id} ({len(prompt)} chars)")
+        async def handle_batched_messages(chat_id: int, batch: list[IncomingItem], generation: int) -> None:
             status_resp = await send_tg_message(http_session, bot_token, chat_id, "⏳ <i>Агент выполняет задачу...</i>", parse_mode="HTML")
             status_msg_id = status_resp.get("result", {}).get("message_id") if status_resp else None
 
             try:
+                await download_batch_media(http_session, bot_token, batch, media_dir=MEDIA_DIR)
+                if generation != coordinator.get_generation(chat_id):
+                    await delete_tg_message(http_session, bot_token, chat_id, status_msg_id)
+                    return
+
+                prompt = format_message_batch(batch)
+                media_count = sum(len(it.saved_media) for it in batch)
+                logger.info(
+                    f"Processing batch of {len(batch)} message(s), {media_count} media file(s) for {chat_id} ({len(prompt)} chars)"
+                )
+
                 is_active = os.path.exists(SESSION_FLAG)
                 output, success = await run_antigravity(prompt, continue_session=is_active)
 
@@ -652,7 +914,7 @@ async def main():
                 await delete_tg_message(http_session, bot_token, chat_id, status_msg_id)
                 await send_tg_message(http_session, bot_token, chat_id, f"⚠️ Системная ошибка: {e}", parse_mode=None)
 
-        coordinator = ChatCoordinator(handle_batched_prompt)
+        coordinator = ChatCoordinator(handle_batched_messages)
 
         # Start offset at latest update on boot so it does not replay stale messages
         offset = 0
@@ -694,8 +956,9 @@ async def main():
                             if item is None:
                                 continue
 
+                            preview = item.text[:50] if item.text else ", ".join(s.label for s in item.media_specs) or "[медиа]"
                             logger.info(
-                                f"Received {'forwarded ' if item.is_forward else ''}message from {chat_id}: {item.text[:50]}..."
+                                f"Received {'forwarded ' if item.is_forward else ''}message from {chat_id}: {preview}..."
                             )
 
                             if not item.is_forward and item.text in ["/start", "/help"]:
@@ -703,10 +966,11 @@ async def main():
                                     "🤖 <b>Antigravity AI Agent</b> подключен!\n\n"
                                     "🧠 <b>Память диалога:</b> включена (агент помнит контекст всей беседы).\n"
                                     "📦 <b>Группировка пересланных сообщений:</b> пачка пересланных сообщений объединяется в один запрос.\n"
+                                    "🖼️ <b>Медиа и файлы:</b> фото, стикеры, видео, голосовые и документы (до 20 МБ) передаются агенту.\n"
                                     "💬 <b>Чтение Telegram-чатов:</b> инструмент <code>tg-read</code> подключён.\n\n"
                                     "<b>Команды:</b>\n"
                                     "• <code>/new</code> или <code>/clear</code> — сбросить контекст и начать новую тему\n"
-                                    "• Любое сообщение или пересланный пост — задача для агента."
+                                    "• Любое сообщение, медиа или пересланный пост — задача для агента."
                                 )
                                 await send_tg_message(http_session, bot_token, chat_id, welcome, parse_mode="HTML")
                                 continue
