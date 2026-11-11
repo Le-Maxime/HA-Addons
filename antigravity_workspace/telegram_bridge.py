@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
+from dataclasses import dataclass, field
+from datetime import datetime
 import os
 import json
 import logging
@@ -9,6 +11,7 @@ import sys
 import glob
 import subprocess
 import traceback
+from typing import Awaitable, Callable
 import aiohttp
 
 # Force unbuffered output so logs appear instantly
@@ -25,6 +28,9 @@ logger = logging.getLogger("telegram_bridge")
 CONFIG_PATH = "/share/antigravity_projects/config.json"
 WORKSPACE_DIR = "/data/workspace"
 SESSION_FLAG = "/data/.session_active"
+TEXT_DEBOUNCE_SEC = 1.0
+FORWARD_DEBOUNCE_SEC = 2.5
+MAX_BATCH_WAIT_SEC = 10.0
 
 def load_config():
     default_config = {
@@ -263,6 +269,14 @@ async def run_antigravity(prompt: str, continue_session: bool) -> tuple[str, boo
         # Outer timeout safety guard (130s)
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=130.0)
+        except asyncio.CancelledError:
+            logger.info("Antigravity execution cancelled; terminating child process...")
+            try:
+                process.kill()
+                await process.wait()
+            except Exception as pe:
+                logger.error(f"Error killing cancelled process: {pe}")
+            raise
         except asyncio.TimeoutError:
             logger.error("Antigravity process timed out after 130s! Terminating...")
             try:
@@ -372,6 +386,214 @@ async def delete_tg_message(session, bot_token, chat_id, message_id):
     except Exception:
         pass
 
+@dataclass
+class IncomingItem:
+    """Normalized incoming Telegram message queued for batch processing."""
+
+    text: str
+    is_forward: bool = False
+    forward_header: str = ""
+    has_media_group: bool = False
+
+
+@dataclass
+class ChatState:
+    """Per-chat debounce buffer and worker lifecycle state."""
+
+    buffer: list[IncomingItem] = field(default_factory=list)
+    last_item_at: float = 0.0
+    worker_task: asyncio.Task | None = None
+    generation: int = 0
+
+
+def _format_user_label(user: dict) -> str:
+    """Builds a readable sender display name from a Telegram user/chat object."""
+    if not isinstance(user, dict):
+        return ""
+    title = user.get("title")
+    if title:
+        return str(title).strip()
+    parts = [p for p in [user.get("first_name"), user.get("last_name")] if p]
+    if parts:
+        return " ".join(str(p).strip() for p in parts)
+    username = user.get("username")
+    return f"@{username}" if username else ""
+
+
+def extract_forward_metadata(message: dict) -> tuple[bool, str]:
+    """Extracts forwarded author/chat and timestamp metadata from a Telegram message."""
+    origin_name = ""
+    fwd_ts = None
+
+    fwd_origin = message.get("forward_origin")
+    if isinstance(fwd_origin, dict):
+        fwd_ts = fwd_origin.get("date")
+        for key in ("chat", "sender_chat", "sender_user"):
+            origin_name = _format_user_label(fwd_origin.get(key))
+            if origin_name:
+                break
+        if not origin_name:
+            origin_name = str(fwd_origin.get("sender_user_name") or "").strip()
+    elif any(k in message for k in ("forward_from_chat", "forward_from", "forward_sender_name", "forward_date")):
+        fwd_ts = message.get("forward_date")
+        origin_name = (
+            _format_user_label(message.get("forward_from_chat"))
+            or _format_user_label(message.get("forward_from"))
+            or str(message.get("forward_sender_name") or "").strip()
+        )
+    else:
+        return False, ""
+
+    time_suffix = ""
+    if isinstance(fwd_ts, (int, float)):
+        try:
+            time_suffix = f" ({datetime.fromtimestamp(fwd_ts).strftime('%H:%M:%S')})"
+        except Exception:
+            time_suffix = ""
+
+    label = origin_name or "неизвестного отправителя"
+    return True, f"[Переслано от {label}{time_suffix}]"
+
+
+def _extract_media_placeholder(message: dict, include_sticker: bool) -> str:
+    """Returns a readable fallback tag when a message has media without text/caption."""
+    if message.get("photo"):
+        return "[Фото]"
+    if message.get("video"):
+        return "[Видео]"
+    if message.get("voice"):
+        return "[Голосовое сообщение]"
+    if message.get("audio"):
+        return "[Аудио]"
+    if message.get("video_note"):
+        return "[Видеосообщение]"
+    doc = message.get("document")
+    if isinstance(doc, dict):
+        fname = doc.get("file_name")
+        return f"[Файл: {fname}]" if fname else "[Файл]"
+    if include_sticker and isinstance(message.get("sticker"), dict):
+        emoji = message["sticker"].get("emoji") or ""
+        return f"[Стикер {emoji}]".strip()
+    return ""
+
+
+def extract_incoming_item(message: dict) -> IncomingItem | None:
+    """Parses a Telegram update message into an IncomingItem, or None if unsupported."""
+    is_forward, forward_header = extract_forward_metadata(message)
+    raw_text = (message.get("text") or message.get("caption") or "").strip()
+    if not raw_text:
+        raw_text = _extract_media_placeholder(message, include_sticker=is_forward)
+    if not raw_text:
+        return None
+    return IncomingItem(
+        text=raw_text,
+        is_forward=is_forward,
+        forward_header=forward_header,
+        has_media_group=bool(message.get("media_group_id")),
+    )
+
+
+def format_message_batch(items: list[IncomingItem]) -> str:
+    """Combines one or more debounced messages into a clean prompt for Antigravity."""
+    if len(items) == 1:
+        item = items[0]
+        if item.is_forward:
+            return f"{item.forward_header}:\n{item.text}"
+        return item.text
+
+    has_forwards = any(it.is_forward for it in items)
+    if not has_forwards:
+        return "\n\n".join(it.text for it in items)
+
+    parts = []
+    for it in items:
+        if it.is_forward:
+            parts.append(f"{it.forward_header}:\n{it.text}")
+        else:
+            parts.append(f"[Комментарий/запрос пользователя]:\n{it.text}")
+    return "\n\n".join(parts)
+
+
+class ChatCoordinator:
+    """Buffers rapid bursts and forwarded message groups per chat into a single agent run."""
+
+    def __init__(
+        self,
+        handler: Callable[[int, str, int, int], Awaitable[None]],
+        text_debounce: float = TEXT_DEBOUNCE_SEC,
+        forward_debounce: float = FORWARD_DEBOUNCE_SEC,
+        max_batch_wait: float = MAX_BATCH_WAIT_SEC,
+    ):
+        self._handler = handler
+        self.text_debounce = text_debounce
+        self.forward_debounce = forward_debounce
+        self.max_batch_wait = max_batch_wait
+        self._chats: dict[int, ChatState] = {}
+
+    def get_generation(self, chat_id: int) -> int:
+        """Returns the current session generation counter for a chat."""
+        return self._chats.setdefault(chat_id, ChatState()).generation
+
+    def enqueue(self, chat_id: int, item: IncomingItem) -> None:
+        """Adds an incoming message to the chat buffer and starts its worker if idle."""
+        loop = asyncio.get_running_loop()
+        state = self._chats.setdefault(chat_id, ChatState())
+        state.buffer.append(item)
+        state.last_item_at = loop.time()
+
+        if state.worker_task is None or state.worker_task.done():
+            state.worker_task = asyncio.create_task(self._chat_worker(chat_id, state))
+
+    async def reset_chat(self, chat_id: int) -> None:
+        """Clears queued messages, invalidates the session generation, and stops active execution."""
+        state = self._chats.setdefault(chat_id, ChatState())
+        state.buffer.clear()
+        state.generation += 1
+        task = state.worker_task
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            state.worker_task = None
+
+    async def shutdown(self) -> None:
+        """Cancels all active chat workers cleanly on exit."""
+        tasks = [s.worker_task for s in self._chats.values() if s.worker_task and not s.worker_task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _chat_worker(self, chat_id: int, state: ChatState) -> None:
+        loop = asyncio.get_running_loop()
+        while state.buffer:
+            wait_started_at = loop.time()
+            while True:
+                if not state.buffer:
+                    return
+                delay = (
+                    self.forward_debounce
+                    if any(it.is_forward or it.has_media_group for it in state.buffer)
+                    else self.text_debounce
+                )
+                target = min(state.last_item_at + delay, wait_started_at + self.max_batch_wait)
+                remaining = target - loop.time()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(remaining)
+
+            if not state.buffer:
+                return
+
+            batch = state.buffer[:]
+            state.buffer.clear()
+            prompt = format_message_batch(batch)
+            gen = state.generation
+            await self._handler(chat_id, prompt, gen, len(batch))
+
+
 async def main():
     logger.info("Starting Telegram Bridge (Production-grade)...")
     os.makedirs(WORKSPACE_DIR, exist_ok=True)
@@ -402,6 +624,36 @@ async def main():
         except Exception as e:
             logger.error(f"Network error during getMe: {e}")
 
+        async def handle_batched_prompt(chat_id: int, prompt: str, generation: int, count: int) -> None:
+            logger.info(f"Processing batch of {count} message(s) for {chat_id} ({len(prompt)} chars)")
+            status_resp = await send_tg_message(http_session, bot_token, chat_id, "⏳ <i>Агент выполняет задачу...</i>", parse_mode="HTML")
+            status_msg_id = status_resp.get("result", {}).get("message_id") if status_resp else None
+
+            try:
+                is_active = os.path.exists(SESSION_FLAG)
+                output, success = await run_antigravity(prompt, continue_session=is_active)
+
+                if generation != coordinator.get_generation(chat_id):
+                    logger.info(f"Discarding stale response for {chat_id} after session reset")
+                    return
+
+                if success and not is_active:
+                    with open(SESSION_FLAG, "w") as f:
+                        f.write("1")
+
+                await delete_tg_message(http_session, bot_token, chat_id, status_msg_id)
+                status_msg_id = None
+                await send_smart_reply(http_session, bot_token, chat_id, output)
+            except asyncio.CancelledError:
+                await delete_tg_message(http_session, bot_token, chat_id, status_msg_id)
+                raise
+            except Exception as e:
+                logger.error(f"Error handling batch for {chat_id}: {e}\n{traceback.format_exc()}")
+                await delete_tg_message(http_session, bot_token, chat_id, status_msg_id)
+                await send_tg_message(http_session, bot_token, chat_id, f"⚠️ Системная ошибка: {e}", parse_mode=None)
+
+        coordinator = ChatCoordinator(handle_batched_prompt)
+
         # Start offset at latest update on boot so it does not replay stale messages
         offset = 0
         try:
@@ -413,95 +665,78 @@ async def main():
         except Exception as e:
             logger.error(f"Error fetching initial offset: {e}")
 
-        while True:
-            try:
-                url = f"https://api.telegram.org/bot{bot_token}/getUpdates?offset={offset}&timeout=30"
-                async with http_session.get(url, timeout=aiohttp.ClientTimeout(total=45)) as resp:
-                    if resp.status != 200:
-                        await asyncio.sleep(5)
-                        continue
-                    updates_data = await resp.json()
-                    
-                    if not updates_data.get("ok"):
-                        await asyncio.sleep(5)
-                        continue
+        try:
+            while True:
+                try:
+                    url = f"https://api.telegram.org/bot{bot_token}/getUpdates?offset={offset}&timeout=30"
+                    async with http_session.get(url, timeout=aiohttp.ClientTimeout(total=45)) as resp:
+                        if resp.status != 200:
+                            await asyncio.sleep(5)
+                            continue
+                        updates_data = await resp.json()
 
-                    for update in updates_data.get("result", []):
-                        offset = update["update_id"] + 1
-                        message = update.get("message")
-                        if not message:
+                        if not updates_data.get("ok"):
+                            await asyncio.sleep(5)
                             continue
 
-                        chat_id = message["chat"]["id"]
-                        raw_text = (message.get("text") or message.get("caption") or "").strip()
-                        if not raw_text:
-                            continue
+                        for update in updates_data.get("result", []):
+                            offset = update["update_id"] + 1
+                            message = update.get("message")
+                            if not message:
+                                continue
 
-                        if allowed_chat_ids and chat_id not in allowed_chat_ids:
-                            logger.warning(f"Unauthorized access attempt from chat_id {chat_id}")
-                            continue
+                            chat_id = message["chat"]["id"]
+                            if allowed_chat_ids and chat_id not in allowed_chat_ids:
+                                logger.warning(f"Unauthorized access attempt from chat_id {chat_id}")
+                                continue
 
-                        # Preserve forwarded origin metadata if user forwards a message to the bot
-                        fwd_prefix = ""
-                        fwd_origin = message.get("forward_origin")
-                        if fwd_origin:
-                            origin_chat = fwd_origin.get("chat") or fwd_origin.get("sender_user") or {}
-                            origin_name = origin_chat.get("title") or origin_chat.get("first_name") or fwd_origin.get("sender_user_name") or ""
-                            if origin_name:
-                                fwd_prefix = f"[Переслано из: {origin_name}]\n"
-                        elif message.get("forward_from_chat") or message.get("forward_from"):
-                            fc = message.get("forward_from_chat") or message.get("forward_from") or {}
-                            origin_name = fc.get("title") or fc.get("first_name") or ""
-                            if origin_name:
-                                fwd_prefix = f"[Переслано из: {origin_name}]\n"
+                            item = extract_incoming_item(message)
+                            if item is None:
+                                continue
 
-                        text = f"{fwd_prefix}{raw_text}" if fwd_prefix and not raw_text.startswith("/") else raw_text
-                        logger.info(f"Received message from {chat_id}: {raw_text[:50]}...")
-
-                        if raw_text in ["/start", "/help"]:
-                            welcome = (
-                                "🤖 <b>Antigravity AI Agent</b> подключен!\n\n"
-                                "🧠 <b>Память диалога:</b> включена (агент помнит контекст всей беседы).\n"
-                                "💬 <b>Чтение Telegram-чатов:</b> инструмент <code>tg-read</code> подключён.\n\n"
-                                "<b>Команды:</b>\n"
-                                "• <code>/new</code> или <code>/clear</code> — сбросить контекст и начать новую тему\n"
-                                "• Любое сообщение или пересланный пост — задача для агента."
+                            logger.info(
+                                f"Received {'forwarded ' if item.is_forward else ''}message from {chat_id}: {item.text[:50]}..."
                             )
-                            await send_tg_message(http_session, bot_token, chat_id, welcome, parse_mode="HTML")
-                            continue
 
-                        if raw_text.lower() in ["/new", "/clear", "/reset"]:
-                            if os.path.exists(SESSION_FLAG):
-                                try:
-                                    os.remove(SESSION_FLAG)
-                                except Exception:
-                                    pass
-                            clean_stale_locks()
-                            await send_tg_message(http_session, bot_token, chat_id, "🧹 <b>Память диалога очищена!</b> Следующее сообщение начнет тему с чистого листа.", parse_mode="HTML")
-                            continue
+                            if not item.is_forward and item.text in ["/start", "/help"]:
+                                welcome = (
+                                    "🤖 <b>Antigravity AI Agent</b> подключен!\n\n"
+                                    "🧠 <b>Память диалога:</b> включена (агент помнит контекст всей беседы).\n"
+                                    "📦 <b>Группировка пересланных сообщений:</b> пачка пересланных сообщений объединяется в один запрос.\n"
+                                    "💬 <b>Чтение Telegram-чатов:</b> инструмент <code>tg-read</code> подключён.\n\n"
+                                    "<b>Команды:</b>\n"
+                                    "• <code>/new</code> или <code>/clear</code> — сбросить контекст и начать новую тему\n"
+                                    "• Любое сообщение или пересланный пост — задача для агента."
+                                )
+                                await send_tg_message(http_session, bot_token, chat_id, welcome, parse_mode="HTML")
+                                continue
 
-                        # Temporary status indicator
-                        status_resp = await send_tg_message(http_session, bot_token, chat_id, "⏳ <i>Агент выполняет задачу...</i>", parse_mode="HTML")
-                        status_msg_id = status_resp.get("result", {}).get("message_id") if status_resp else None
+                            if not item.is_forward and item.text.lower() in ["/new", "/clear", "/reset"]:
+                                await coordinator.reset_chat(chat_id)
+                                if os.path.exists(SESSION_FLAG):
+                                    try:
+                                        os.remove(SESSION_FLAG)
+                                    except Exception:
+                                        pass
+                                clean_stale_locks()
+                                await send_tg_message(
+                                    http_session,
+                                    bot_token,
+                                    chat_id,
+                                    "🧹 <b>Память диалога очищена!</b> Следующее сообщение начнет тему с чистого листа.",
+                                    parse_mode="HTML",
+                                )
+                                continue
 
-                        is_active = os.path.exists(SESSION_FLAG)
-                        output, success = await run_antigravity(text, continue_session=is_active)
+                            coordinator.enqueue(chat_id, item)
 
-                        if success and not is_active:
-                            with open(SESSION_FLAG, "w") as f:
-                                f.write("1")
-
-                        # Remove the temporary status message
-                        await delete_tg_message(http_session, bot_token, chat_id, status_msg_id)
-
-                        # Send formatted smart reply
-                        await send_smart_reply(http_session, bot_token, chat_id, output)
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in update polling loop: {e}\n{traceback.format_exc()}")
-                await asyncio.sleep(5)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.error(f"Error in update polling loop: {e}\n{traceback.format_exc()}")
+                    await asyncio.sleep(5)
+        finally:
+            await coordinator.shutdown()
 
 if __name__ == "__main__":
     asyncio.run(main())
