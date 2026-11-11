@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import html
+import shutil
 import sys
 import glob
 import subprocess
@@ -110,6 +111,71 @@ def ensure_tg_tools_integrated():
                 f.write(updated)
         except Exception as e:
             logger.warning(f"Failed updating {agents_path}: {e}")
+
+    import_pending_tg_session(reader_path)
+
+
+PENDING_TG_SESSION_PATH = "/share/antigravity_projects/.pending_user_session.session"
+TARGET_TG_SESSION_PATH = "/data/telegram_sessions/user_session.session"
+
+
+def import_pending_tg_session(
+    reader_path: str = "",
+    pending_path: str = PENDING_TG_SESSION_PATH,
+    target_path: str = TARGET_TG_SESSION_PATH,
+) -> bool:
+    """Moves staged Telethon session from /share into private /data storage."""
+    if not os.path.exists(pending_path):
+        return False
+
+    tmp_target = target_path + ".tmp"
+    try:
+        target_dir = os.path.dirname(target_path)
+        os.makedirs(target_dir, mode=0o700, exist_ok=True)
+        os.chmod(target_dir, 0o700)
+
+        for suffix in ("-journal", "-wal", "-shm"):
+            sidecar = target_path + suffix
+            if os.path.exists(sidecar):
+                os.remove(sidecar)
+
+        shutil.copy2(pending_path, tmp_target)
+        os.chmod(tmp_target, 0o600)
+        os.replace(tmp_target, target_path)
+        os.chmod(target_path, 0o600)
+
+        for sidecar in (
+            pending_path,
+            pending_path + "-journal",
+            pending_path + "-wal",
+            pending_path + "-shm",
+        ):
+            if os.path.exists(sidecar):
+                os.remove(sidecar)
+
+        logger.info(f"Imported Telegram session to {target_path} and removed staged file")
+
+        if reader_path and os.path.exists(reader_path):
+            res = subprocess.run(
+                [sys.executable, reader_path, "status"],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            status_out = (res.stdout or res.stderr or "").strip()
+            if res.returncode == 0:
+                logger.info(f"tg-read status after session import: {status_out}")
+            else:
+                logger.warning(f"tg-read status check failed ({res.returncode}): {status_out}")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed importing pending Telegram session: {e}")
+        if os.path.exists(tmp_target):
+            try:
+                os.remove(tmp_target)
+            except OSError:
+                pass
+        return False
 
 def clean_stale_locks():
     """Removes stale lock files if a previous process was abruptly killed."""
