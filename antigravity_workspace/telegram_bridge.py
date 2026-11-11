@@ -114,62 +114,133 @@ def clean_stale_locks():
     except Exception as e:
         logger.warning(f"Error scanning lock files: {e}")
 
+def _format_blockquote(match: re.Match) -> str:
+    """Converts consecutive escaped blockquote lines into a Telegram <blockquote>."""
+    block = match.group(0)
+    trailing_nl = "\n" if block.endswith("\n") else ""
+    lines = [re.sub(r"^&gt;\s?", "", line) for line in block.rstrip("\n").split("\n")]
+    return "<blockquote>" + "\n".join(lines) + "</blockquote>" + trailing_nl
+
+
+def _format_header(match: re.Match) -> str:
+    """Formats Markdown headings as bold without duplicating outer <b> tags."""
+    content = match.group(1).strip()
+    if (
+        content.startswith("<b>")
+        and content.endswith("</b>")
+        and "<b>" not in content[3:-4]
+        and "</b>" not in content[3:-4]
+    ):
+        return content
+    return f"<b>{content}</b>"
+
+
+def _apply_inline_formatting(text: str) -> str:
+    """Applies Markdown bold, strikethrough, and italic emphasis to escaped text."""
+    text = re.sub(r"\*\*(?!\s)([^\n]+?)(?<!\s)\*\*", r"<b>\1</b>", text)
+    text = re.sub(r"(?<!\w)__(?!\s)([^_\n]+?)(?<!\s)__(?!\w)", r"<b>\1</b>", text)
+    text = re.sub(r"~~(?!\s)([^\n]+?)(?<!\s)~~", r"<s>\1</s>", text)
+    text = re.sub(r"(?<!\w)\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\w)", r"<i>\1</i>", text)
+    text = re.sub(r"(?<!\w)_(?!\s)([^_\n]+?)(?<!\s)_(?!\w)", r"<i>\1</i>", text)
+    return text
+
+
 def markdown_to_telegram_html(text: str) -> str:
     """Converts standard Markdown into clean, Telegram-compatible HTML."""
     if not text:
         return ""
 
-    # 1. Protect and format code blocks: ```lang\ncode```
-    code_blocks = []
-    def save_code_block(match):
-        lang = match.group(1) or ""
-        code = match.group(2)
-        escaped_code = html.escape(code.strip("\r\n"))
-        idx = len(code_blocks)
+    # Strip NUL bytes so sentinel tokens cannot collide with input text
+    text = text.replace("\x00", "")
+    placeholders: list[tuple[str, str]] = []
+
+    def reserve(prefix: str, rendered: str) -> str:
+        token = f"\x00{prefix}{len(placeholders)}\x00"
+        placeholders.append((token, rendered))
+        return token
+
+    # 1. Protect and format fenced code blocks: ```lang\ncode``` and ```code```
+    def save_code_block(match: re.Match) -> str:
+        lang = (match.group(1) or "").strip() if match.lastindex and match.lastindex >= 2 else ""
+        code = match.group(2) if match.lastindex and match.lastindex >= 2 else match.group(1)
+        escaped_code = html.escape(code.strip("\r\n"), quote=False)
         if lang:
-            tag = f'<pre><code class="language-{html.escape(lang)}">{escaped_code}</code></pre>'
+            tag = f'<pre><code class="language-{html.escape(lang, quote=True)}">{escaped_code}</code></pre>'
         else:
-            tag = f'<pre>{escaped_code}</pre>'
-        code_blocks.append(tag)
-        return f"___CODE_BLOCK_{idx}___"
+            tag = f"<pre>{escaped_code}</pre>"
+        return reserve("CB", tag)
 
-    text = re.sub(r"```(\w+)?\r?\n?(.*?)```", save_code_block, text, flags=re.DOTALL)
+    text = re.sub(r"```(?:([a-zA-Z0-9_+#.-]+)[ \t]*)?\r?\n(.*?)```", save_code_block, text, flags=re.DOTALL)
+    text = re.sub(r"```([^`\n]+?)```", save_code_block, text)
 
-    # 2. Protect and format inline code: `code`
-    inline_codes = []
-    def save_inline_code(match):
-        code = match.group(1)
-        escaped_code = html.escape(code)
-        idx = len(inline_codes)
-        inline_codes.append(f"<code>{escaped_code}</code>")
-        return f"___INLINE_CODE_{idx}___"
+    # 2. Protect and format inline code: ``code`` and `code`
+    def save_inline_code(match: re.Match) -> str:
+        escaped_code = html.escape(match.group(1), quote=False)
+        return reserve("IC", f"<code>{escaped_code}</code>")
 
-    text = re.sub(r"`([^`]+)`", save_inline_code, text)
+    text = re.sub(r"(?<!`)``(?!`)([^\n]+?)``(?!`)", save_inline_code, text)
+    text = re.sub(r"`([^`\n]+?)`", save_inline_code, text)
 
-    # 3. Escape HTML entities for the rest of text
-    text = html.escape(text)
+    # 3. Escape HTML entities for remaining plain text
+    text = html.escape(text, quote=False)
 
-    # 4. Headers (# Header, ## Header, ### Header) -> <b>Header</b>
-    text = re.sub(r"^(?:#{1,6})\s+(.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
+    # 4. Protect Markdown links [label](https://...) before inline emphasis rules
+    def save_link(match: re.Match) -> str:
+        label = _apply_inline_formatting(match.group(1))
+        url = match.group(2).replace('"', "%22")
+        return reserve("LK", f'<a href="{url}">{label}</a>')
 
-    # 5. Bold: **text** or __text__ -> <b>text</b>
-    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
-    text = re.sub(r"__(.+?)__", r"<b>\1</b>", text)
+    text = re.sub(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)", save_link, text)
 
-    # 6. Bullet lists: lines starting with * or - -> • bullet point
-    text = re.sub(r"^\s*[\*\-]\s+", "• ", text, flags=re.MULTILINE)
+    # 5. Block-level elements (horizontal rules, bullets, blockquotes)
+    text = re.sub(r"^[ \t]*[-*_]{3,}[ \t]*$", "──────────", text, flags=re.MULTILINE)
+    text = re.sub(r"^[ \t]*[\*\-]\s+", "• ", text, flags=re.MULTILINE)
+    text = re.sub(r"(?:^&gt;\s?.*(?:\n|$))+", _format_blockquote, text, flags=re.MULTILINE)
 
-    # 7. Italic: *text* or _text_ (when not part of a word or tag)
-    text = re.sub(r"(?<!\w)\*([^*]+?)\*(?!\w)", r"<i>\1</i>", text)
-    text = re.sub(r"(?<!\w)_([^_]+?)_(?!\w)", r"<i>\1</i>", text)
+    # 6. Inline emphasis (never touches underscore/asterisk-free \x00 placeholders)
+    text = _apply_inline_formatting(text)
 
-    # 8. Restore code blocks and inline code
-    for idx, tag in enumerate(code_blocks):
-        text = text.replace(f"___CODE_BLOCK_{idx}___", tag)
-    for idx, tag in enumerate(inline_codes):
-        text = text.replace(f"___INLINE_CODE_{idx}___", tag)
+    # 7. Headings (# Header .. ###### Header)
+    text = re.sub(r"^[ \t]*#{1,6}\s+(.+)$", _format_header, text, flags=re.MULTILINE)
+
+    # 8. Restore reserved code blocks, inline code, and links (reverse order handles nested tokens cleanly)
+    for token, rendered in reversed(placeholders):
+        text = text.replace(token, rendered)
 
     return text
+
+
+def split_markdown_chunks(text: str, max_chars: int = 3000) -> list[str]:
+    """Splits Markdown into chunks on line boundaries while keeping fenced code blocks intact."""
+    if len(text) <= max_chars:
+        return [text]
+
+    chunks: list[str] = []
+    current_lines: list[str] = []
+    current_len = 0
+    open_fence = ""
+
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        line_len = len(line)
+
+        if current_lines and current_len + line_len > max_chars:
+            if open_fence:
+                current_lines.append("\n```\n" if not current_lines[-1].endswith("\n") else "```\n")
+            chunks.append("".join(current_lines).rstrip("\n"))
+            current_lines = [open_fence + "\n"] if open_fence else []
+            current_len = len(current_lines[0]) if current_lines else 0
+
+        current_lines.append(line)
+        current_len += line_len
+
+        if stripped.startswith("```"):
+            open_fence = "" if open_fence else stripped.rstrip("\r\n")
+
+    if current_lines:
+        chunks.append("".join(current_lines).rstrip("\n"))
+
+    return [c for c in chunks if c]
 
 async def run_antigravity(prompt: str, continue_session: bool) -> tuple[str, bool]:
     # Proper flag order: options first, -p <prompt> last
@@ -263,22 +334,32 @@ async def send_smart_reply(session, bot_token, chat_id, raw_text):
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(raw_text)
             url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
-            form_data = aiohttp.FormData()
-            form_data.add_field("chat_id", str(chat_id))
-            form_data.add_field("caption", "📄 Ответ слишком большой для одного сообщения, прикрепляю файлом:")
-            form_data.add_field("document", open(file_path, "rb"), filename="response.md")
-            async with session.post(url, data=form_data, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-                data = await resp.json()
-                if data.get("ok"):
-                    logger.info("Sent reply as markdown document")
-                    return
+            with open(file_path, "rb") as doc_file:
+                form_data = aiohttp.FormData()
+                form_data.add_field("chat_id", str(chat_id))
+                form_data.add_field("caption", "📄 Ответ слишком большой для одного сообщения, прикрепляю файлом:")
+                form_data.add_field("document", doc_file, filename="response.md")
+                async with session.post(url, data=form_data, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                    data = await resp.json()
+                    if data.get("ok"):
+                        logger.info("Sent reply as markdown document")
+                        return
         except Exception as e:
             logger.error(f"Failed to send response as document: {e}")
 
-    # Otherwise split into 4000-char chunks
-    for i in range(0, len(formatted), 4000):
-        chunk = formatted[i:i+4000]
-        await send_tg_message(session, bot_token, chat_id, chunk, parse_mode="HTML")
+    # Otherwise split Markdown on line/fence boundaries so every HTML chunk stays valid
+    for md_chunk in split_markdown_chunks(raw_text, max_chars=2800):
+        html_chunk = markdown_to_telegram_html(md_chunk)
+        if len(html_chunk) <= 4096:
+            await send_tg_message(session, bot_token, chat_id, html_chunk, parse_mode="HTML")
+        else:
+            for sub_chunk in split_markdown_chunks(md_chunk, max_chars=1400):
+                sub_html = markdown_to_telegram_html(sub_chunk)
+                if len(sub_html) <= 4096:
+                    await send_tg_message(session, bot_token, chat_id, sub_html, parse_mode="HTML")
+                else:
+                    for i in range(0, len(sub_chunk), 3500):
+                        await send_tg_message(session, bot_token, chat_id, sub_chunk[i:i+3500], parse_mode=None)
     logger.info("Sent chunked reply")
 
 async def delete_tg_message(session, bot_token, chat_id, message_id):
