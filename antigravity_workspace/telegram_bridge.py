@@ -36,6 +36,7 @@ MEDIA_RETENTION_SEC = 24 * 3600
 TEXT_DEBOUNCE_SEC = 1.0
 FORWARD_DEBOUNCE_SEC = 2.5
 MAX_BATCH_WAIT_SEC = 10.0
+DEFAULT_AGY_TIMEOUT_SEC = 600
 
 def load_config():
     default_config = {
@@ -319,15 +320,44 @@ def split_markdown_chunks(text: str, max_chars: int = 3000) -> list[str]:
 
     return [c for c in chunks if c]
 
-async def run_antigravity(prompt: str, continue_session: bool) -> tuple[str, bool]:
+def _format_duration_ru(seconds: int) -> str:
+    """Formats a timeout duration in seconds into a readable Russian label."""
+    if seconds > 0 and seconds % 60 == 0:
+        return f"{seconds // 60} мин"
+    return f"{seconds} сек"
+
+
+def _is_print_timeout_error(stderr_text: str) -> bool:
+    """Returns True when agy CLI aborted a turn due to --print-timeout."""
+    err_lower = stderr_text.lower()
+    return (
+        "print timeout" in err_lower
+        or "print_timeout" in err_lower
+        or "deadline_exceeded" in err_lower
+    )
+
+
+async def run_antigravity(
+    prompt: str,
+    continue_session: bool,
+    timeout_sec: int = DEFAULT_AGY_TIMEOUT_SEC,
+) -> tuple[str, bool]:
     # Proper flag order: options first, -p <prompt> last
-    cmd = ["agy", "--dangerously-skip-permissions", "--print-timeout", "120s"]
+    timeout_sec = int(timeout_sec)
+    print_timeout_arg = "0s" if timeout_sec <= 0 else f"{timeout_sec}s"
+    outer_timeout = 1800.0 if timeout_sec <= 0 else float(timeout_sec + 20)
+    limit_label = _format_duration_ru(timeout_sec if timeout_sec > 0 else 1800)
+
+    cmd = ["agy", "--dangerously-skip-permissions", "--print-timeout", print_timeout_arg]
     if continue_session:
         cmd.append("-c")
     cmd.extend(["-p", prompt])
 
-    logger.info(f"Executing Antigravity: agy (continue={continue_session}) prompt={prompt[:40]}...")
-    
+    logger.info(
+        f"Executing Antigravity: agy (continue={continue_session}, timeout={print_timeout_arg}) "
+        f"prompt={prompt[:40]}..."
+    )
+
     try:
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -336,10 +366,9 @@ async def run_antigravity(prompt: str, continue_session: bool) -> tuple[str, boo
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        
-        # Outer timeout safety guard (130s)
+
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=130.0)
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=outer_timeout)
         except asyncio.CancelledError:
             logger.info("Antigravity execution cancelled; terminating child process...")
             try:
@@ -349,13 +378,17 @@ async def run_antigravity(prompt: str, continue_session: bool) -> tuple[str, boo
                 logger.error(f"Error killing cancelled process: {pe}")
             raise
         except asyncio.TimeoutError:
-            logger.error("Antigravity process timed out after 130s! Terminating...")
+            logger.error(f"Antigravity process timed out after {outer_timeout:.0f}s! Terminating...")
             try:
                 process.kill()
                 await process.wait()
             except Exception as pe:
                 logger.error(f"Error killing timed out process: {pe}")
-            return "⏱️ Превышено время ожидания ответа агента (2 мин). Возможно, задача слишком сложная. Попробуйте разбить запрос или начать с /new.", False
+            return (
+                f"⏱️ Агент не успел завершить ответ за {limit_label} (превышен внешний лимит ожидания).\n\n"
+                "Контекст сохранён — попробуйте повторить запрос или разбить задачу на шаги.",
+                False,
+            )
 
         out = stdout.decode("utf-8", errors="replace").strip()
         err = stderr.decode("utf-8", errors="replace").strip()
@@ -368,7 +401,20 @@ async def run_antigravity(prompt: str, continue_session: bool) -> tuple[str, boo
             err_lower = err.lower()
             if any(k in err_lower for k in ["no conversation", "not found", "not active", "corrupt", "failed to resume"]):
                 logger.warning("Session failed with -c, falling back to clean session...")
-                return await run_antigravity(prompt, continue_session=False)
+                return await run_antigravity(prompt, continue_session=False, timeout_sec=timeout_sec)
+
+        if process.returncode != 0 and _is_print_timeout_error(err):
+            if out:
+                return (
+                    f"{out}\n\n⏱️ Ответ прерван по лимиту времени ({limit_label}), "
+                    "но контекст сохранён — напишите «продолжи», если нужно дописать до конца.",
+                    False,
+                )
+            return (
+                f"⏱️ Агент не успел сформировать ответ за {limit_label} (задача ещё выполнялась).\n\n"
+                "Контекст сохранён — попробуйте повторить запрос или разбить анализ на более короткие шаги.",
+                False,
+            )
 
         if process.returncode != 0 and not out:
             return f"⚠️ Ошибка выполнения:\n{err}", False
@@ -932,6 +978,11 @@ async def main():
 
     logger.info(f"Using Bot Token: {bot_token[:10]}... Allowed chat IDs: {allowed_chat_ids}")
 
+    try:
+        agy_timeout_sec = int(config.get("agy_timeout_sec", DEFAULT_AGY_TIMEOUT_SEC))
+    except (TypeError, ValueError):
+        agy_timeout_sec = DEFAULT_AGY_TIMEOUT_SEC
+
     async with aiohttp.ClientSession() as http_session:
         try:
             async with http_session.get(f"https://api.telegram.org/bot{bot_token}/getMe") as resp:
@@ -959,7 +1010,11 @@ async def main():
                 )
 
                 is_active = os.path.exists(SESSION_FLAG)
-                output, success = await run_antigravity(prompt, continue_session=is_active)
+                output, success = await run_antigravity(
+                    prompt,
+                    continue_session=is_active,
+                    timeout_sec=agy_timeout_sec,
+                )
 
                 if generation != coordinator.get_generation(chat_id):
                     logger.info(f"Discarding stale response for {chat_id} after session reset")
