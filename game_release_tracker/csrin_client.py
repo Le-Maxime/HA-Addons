@@ -1,4 +1,5 @@
 import re
+import time
 import logging
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
 from typing import Dict, Optional
@@ -15,6 +16,7 @@ class CSRinClient:
 
     def __init__(self, user_agent: Optional[str] = None, timeout: int = 20, auth_config: Optional[Dict] = None):
         self.timeout = timeout
+        self._last_search_time = 0.0
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": user_agent or (
@@ -39,15 +41,19 @@ class CSRinClient:
             for item in raw_cookie_str.split(";"):
                 if "=" in item:
                     name, value = item.strip().split("=", 1)
-                    self.session.cookies.set(name.strip(), value.strip(), domain="cs.rin.ru", path="/")
+                    for path in ["/", "/forum"]:
+                        self.session.cookies.set(name.strip(), value.strip(), domain="cs.rin.ru", path=path)
             logger.info("Custom cookie string applied to session.")
 
         # Dict of individual cookies
         cookies_dict = auth_config.get("cookies", {})
         for name, value in cookies_dict.items():
             if value and str(value).strip():
-                self.session.cookies.set(name.strip(), str(value).strip(), domain="cs.rin.ru", path="/")
-                logger.info(f"Applied auth cookie: {name}")
+                clean_name = name.strip()
+                clean_val = str(value).strip()
+                for path in ["/", "/forum"]:
+                    self.session.cookies.set(clean_name, clean_val, domain="cs.rin.ru", path=path)
+                logger.info(f"Applied auth cookie: {clean_name}")
 
     def _bypass_security(self, resp_text: str, target_url: str) -> requests.Response:
         """Parses security token from 401 response and requests /securitycheck endpoint."""
@@ -61,8 +67,9 @@ class CSRinClient:
         exp = exp_match.group(1)
         logger.info(f"Received security challenge. Handshaking token (exp={exp})...")
 
-        self.session.cookies.set("securitytoken", token, domain="cs.rin.ru", path="/")
-        self.session.cookies.set("securitytoken_expiration", exp, domain="cs.rin.ru", path="/")
+        for path in ["/", "/forum"]:
+            self.session.cookies.set("securitytoken", token, domain="cs.rin.ru", path=path)
+            self.session.cookies.set("securitytoken_expiration", exp, domain="cs.rin.ru", path=path)
 
         parsed = urlparse(target_url)
         check_path = "/securitycheck" + parsed.path
@@ -103,11 +110,20 @@ class CSRinClient:
         """
         Fetches the user's latest posts from cs.rin.ru search.php.
         Returns a list of dictionaries with post details.
+        Automatically paces consecutive search queries by at least 15 seconds to avoid phpBB flood limits.
         """
+        now = time.time()
+        elapsed = now - self._last_search_time
+        if elapsed < 15.0:
+            sleep_needed = 15.0 - elapsed
+            logger.debug(f"Pacing forum search requests: sleeping for {sleep_needed:.1f}s...")
+            time.sleep(sleep_needed)
+
         self.ensure_session()
 
         url = f"https://cs.rin.ru/forum/search.php?author_id={author_id}&sr=posts"
         resp = self.get(url)
+        self._last_search_time = time.time()
         if resp.status_code != 200:
             logger.error(f"Failed to fetch posts for author_id={author_id}: HTTP {resp.status_code}")
             return []

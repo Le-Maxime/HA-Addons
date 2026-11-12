@@ -26,3 +26,6 @@ configuration:
   securitytoken_expiration:
     name: "Cookie: securitytoken_expiration"
     description: "Anti-bot challenge expiration timestamp"
+  custom_csrin_user_ids:
+    name: "Additional cs.rin.ru User IDs"
+    description: "Comma-separated forum user IDs to monitor (e.g. 3910470)"

@@ -39,6 +39,7 @@ def load_ha_options() -> Dict:
         "csrinru_phpbb3_sid": os.getenv("CSRIN_COOKIE_SID", ""),
         "securitytoken": os.getenv("CSRIN_SECURITY_TOKEN", ""),
         "securitytoken_expiration": os.getenv("CSRIN_SECURITY_EXP", ""),
+        "custom_csrin_user_ids": os.getenv("CUSTOM_CSRIN_USER_IDS", ""),
     }
 
 
@@ -288,6 +289,11 @@ def main():
     telegram_chat_id = str(options.get("telegram_chat_id", "")).strip()
     discord_webhook = str(options.get("discord_webhook", "")).strip()
 
+    custom_ids_raw = str(options.get("custom_csrin_user_ids", "")).strip()
+    custom_user_ids = [cid.strip() for cid in custom_ids_raw.replace(";", ",").split(",") if cid.strip()]
+    if custom_user_ids:
+        logger.info(f"Custom cs.rin.ru User IDs to monitor: {custom_user_ids}")
+
     # Build auth cookies from options
     cookies = {}
     for key in ["csrinru_phpbb3_u", "csrinru_phpbb3_k", "csrinru_phpbb3_sid", "securitytoken", "securitytoken_expiration"]:
@@ -348,25 +354,36 @@ def main():
             except Exception as e:
                 logger.error(f"Error checking DenuvOwO on cs.rin.ru: {e}")
 
-            # 2. Check voices38 on cs.rin.ru (author_id = 885704)
+            # 2. Check voices38 on cs.rin.ru (active ID: 3910470 [v0ices38], legacy ID: 885704)
             new_voices_rin = []
-            logger.info("Checking cs.rin.ru for voices38 (ID: 885704)...")
-            try:
-                voices_rin_posts = csrin_client.fetch_user_posts(author_id="885704")
-                if voices_rin_posts:
-                    if storage.is_initial_run("885704"):
-                        logger.info(f"First run for voices38 (cs.rin.ru): indexed {len(voices_rin_posts)} existing posts.")
-                        storage.mark_posts_seen_bulk(voices_rin_posts)
-                    else:
-                        for p in voices_rin_posts:
-                            if not storage.is_post_seen(p.get("post_id")):
+            voices_rin_posts = []
+            for author_id in ["3910470", "885704"]:
+                logger.info(f"Checking cs.rin.ru for voices38 (ID: {author_id})...")
+                try:
+                    posts = csrin_client.fetch_user_posts(author_id=author_id)
+                    if posts:
+                        voices_rin_posts.extend(posts)
+                        is_first = storage.is_initial_run(author_id)
+                        for p in posts:
+                            p["author"] = "voices38"
+                            p["author_type"] = "Кряк"
+                            p_id = p.get("post_id")
+                            if not storage.is_post_seen(p_id):
                                 if is_genuine_release_post(p):
-                                    new_voices_rin.append(p)
+                                    posted_date = (p.get("posted_date") or "").lower()
+                                    # If not first run, or if posted Today/Yesterday on first run -> notify!
+                                    if (not is_first) or ("today" in posted_date or "yesterday" in posted_date):
+                                        logger.info(f"Found new release by voices38 (Post #{p_id}): {p.get('topic_title')}")
+                                        new_voices_rin.append(p)
+                                    else:
+                                        storage.mark_post_seen(p)
                                 else:
-                                    logger.info(f"Skipping non-release discussion comment by voices38 (Post ID {p.get('post_id')})")
+                                    logger.info(f"Skipping non-release discussion comment by voices38 (Post ID {p_id})")
                                     storage.mark_post_seen(p)
-            except Exception as e:
-                logger.error(f"Error checking voices38 on cs.rin.ru: {e}")
+                        if is_first:
+                            logger.info(f"First run for voices38 ID {author_id}: indexed {len(posts)} posts ({len(new_voices_rin)} new releases queued for notification).")
+                except Exception as e:
+                    logger.error(f"Error checking voices38 (ID: {author_id}) on cs.rin.ru: {e}")
 
             # 3. Check voices38 on Reddit
             new_voices_reddit = []
@@ -411,14 +428,41 @@ def main():
             except Exception as e:
                 logger.error(f"Error checking Artifact on cs.rin.ru: {e}")
 
-            # 5. Synchronize & Unify ALL Releases into Catalog (only when data available, skips flood-limit cycles)
+            # 5. Check Custom cs.rin.ru User IDs (if configured)
+            for custom_id in custom_user_ids:
+                if custom_id in ["3625690", "3910470", "885704", "3880030"]:
+                    continue
+                logger.info(f"Checking custom cs.rin.ru user (ID: {custom_id})...")
+                try:
+                    c_posts = csrin_client.fetch_user_posts(author_id=custom_id)
+                    if c_posts:
+                        is_first = storage.is_initial_run(custom_id)
+                        new_custom = []
+                        for p in c_posts:
+                            p_id = p.get("post_id")
+                            if not storage.is_post_seen(p_id):
+                                if is_genuine_release_post(p):
+                                    posted_date = (p.get("posted_date") or "").lower()
+                                    if (not is_first) or ("today" in posted_date or "yesterday" in posted_date):
+                                        new_custom.append(p)
+                                    else:
+                                        storage.mark_post_seen(p)
+                                else:
+                                    storage.mark_post_seen(p)
+                        if new_custom:
+                            author_disp = c_posts[0].get("author") or f"User_{custom_id}"
+                            process_crack_author_updates(author_disp, custom_id, new_custom, [], storage, notifier)
+                except Exception as e:
+                    logger.error(f"Error checking custom user ID {custom_id} on cs.rin.ru: {e}")
+
+            # 6. Synchronize & Unify ALL Releases into Catalog (only when data available, skips flood-limit cycles)
             if denuvo_posts or voices_rin_posts or reddit_posts or artifact_posts:
                 try:
                     sync_all_catalog_releases(denuvo_posts, voices_rin_posts, reddit_posts, artifact_posts, storage)
                 except Exception as e:
                     logger.error(f"Error in sync_all_catalog_releases: {e}")
 
-            # 6. Process new DenuvOwO posts
+            # 7. Process new DenuvOwO posts
             if denuvo_posts and not storage.is_initial_run("3625690"):
                 new_denuvo = [p for p in denuvo_posts if not storage.is_post_seen(p.get("post_id"))]
                 for post in reversed(new_denuvo):
@@ -432,12 +476,12 @@ def main():
                     notifier.notify(post)
                     storage.mark_post_seen(post)
 
-            # 7. Process new voices38 updates (Rin + Reddit merged)
+            # 8. Process new voices38 updates (Rin + Reddit merged)
             if new_voices_rin or new_voices_reddit:
                 logger.info(f"Processing genuine voices38 updates: {len(new_voices_rin)} Rin post(s), {len(new_voices_reddit)} Reddit post(s)")
-                process_crack_author_updates("voices38", "885704", new_voices_rin, new_voices_reddit, storage, notifier)
+                process_crack_author_updates("voices38", "3910470", new_voices_rin, new_voices_reddit, storage, notifier)
 
-            # 8. Process new Artifact updates
+            # 9. Process new Artifact updates
             if new_artifact_rin:
                 logger.info(f"Processing genuine Artifact updates: {len(new_artifact_rin)} Rin post(s)")
                 process_crack_author_updates("Artifact", "3880030", new_artifact_rin, [], storage, notifier, author_type="HV")

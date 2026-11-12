@@ -26,3 +26,6 @@ configuration:
   securitytoken_expiration:
     name: "Куки: securitytoken_expiration"
     description: "Срок действия токена антибот-проверки (Unix timestamp)"
+  custom_csrin_user_ids:
+    name: "Дополнительные ID пользователей cs.rin.ru"
+    description: "ID пользователей форума через запятую для отслеживания (например: 3910470)"
