@@ -10,7 +10,7 @@ Welcome! This is a personal repository of custom Home Assistant add-ons, designe
 | **Free Games Claimer Remaster** | [`free_games_claimer`](./free_games_claimer) | `v1.1.20261022-9d5bafd` | [P-Adamiec/Free-Games-Claimer-Remaster](https://github.com/P-Adamiec/Free-Games-Claimer-Remaster) | Automatic weekly/monthly free games claimer (Epic, Prime Gaming, GOG, Steam). |
 | **Spoolman** | [`spoolman`](./spoolman) | `0.27.1` | [Donkie/Spoolman](https://github.com/Donkie/Spoolman) | Keep track of your 3D printer filament spools with persistent DB storage. |
 | **Game Release Tracker** | [`game_release_tracker`](./game_release_tracker) | `1.2.1` | Custom | Automated game release tracker (DenuvOwO, Artifact, voices38) with Telegram bot and catalog. |
-| **Antigravity Workspace** | [`antigravity_workspace`](./antigravity_workspace) | `1.5.6` | [google-antigravity/antigravity-cli](https://github.com/google-antigravity/antigravity-cli) | AI-агент Antigravity (agy) для автономного написания кода, скриптов и анализа Telegram. |
+| **Antigravity Workspace** | [`antigravity_workspace`](./antigravity_workspace) | `1.5.7` | [google-antigravity/antigravity-cli](https://github.com/google-antigravity/antigravity-cli) | AI-агент Antigravity (agy) для автономного написания кода, скриптов и анализа Telegram. |
 
 ---
 
