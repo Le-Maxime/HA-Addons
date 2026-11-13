@@ -1,6 +1,6 @@
 name: "Antigravity Workspace"
 description: "AI-агент Antigravity (agy) для автономного написания кода, скриптов и глубокого анализа переписок в Telegram."
-version: "1.5.7"
+version: "1.5.8"
 slug: "antigravity_workspace"
 url: "https://github.com/Le-Maxime/HA-Addons/tree/main/antigravity_workspace"
 image: "ghcr.io/le-maxime/{arch}-addon-antigravity_workspace"
